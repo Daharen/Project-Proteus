@@ -39,3 +39,11 @@ Project Proteus is a deterministic, systemic RPG/MMO framework that:
 - Launch pack counts per domain.
 - Hybrid composer grammar.
 - Safe and useful telemetry policy.
+
+## Skeleton Delta (Applied)
+
+- Inference option contract fixed to **7 total** options (`6 + IDK`).
+- `BeliefState::update` now takes likelihoods for the selected answer directly.
+- Degenerate posterior mass now recovers to priors and can signal novelty fallback.
+- Added question-selection scaffold using expected entropy reduction.
+- Added novelty detection hooks and offline trace-log structs.

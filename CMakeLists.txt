@@ -8,6 +8,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_library(proteus_core
     src/simulation/entity.cpp
     src/inference/belief_state.cpp
+    src/inference/question_selector.cpp
+    src/inference/novelty_hooks.cpp
 )
 
 target_include_directories(proteus_core PUBLIC include)
@@ -16,6 +18,11 @@ add_executable(proteus_cli src/main.cpp)
 target_link_libraries(proteus_cli PRIVATE proteus_core)
 
 enable_testing()
-add_executable(proteus_tests tests/test_belief_state.cpp)
+
+add_executable(proteus_tests
+    tests/gtest_main.cpp
+    tests/test_belief_state.cpp
+)
+target_include_directories(proteus_tests PRIVATE tests/third_party)
 target_link_libraries(proteus_tests PRIVATE proteus_core)
 add_test(NAME proteus_tests COMMAND proteus_tests)

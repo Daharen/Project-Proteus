@@ -14,14 +14,17 @@ enum class AnswerOption : std::size_t {
     Option4,
     Option5,
     Option6,
-    Option7,
     Unknown,
 };
+
+constexpr std::size_t kTotalAnswerOptions = 7;
+constexpr std::size_t kIdkIndex = 6;
 
 struct Question {
     std::string id;
     std::string prompt;
-    std::array<std::string, 8> options;
+    std::array<std::string, kTotalAnswerOptions> options;
+    std::size_t idk_index = kIdkIndex;
 };
 
 struct TargetScore {
@@ -29,16 +32,25 @@ struct TargetScore {
     double posterior;
 };
 
+enum class BeliefUpdateStatus {
+    Normal,
+    RecoveredFromDegenerateMass,
+};
+
 class BeliefState {
 public:
     explicit BeliefState(std::vector<TargetScore> priors);
 
-    void update(const std::string& question_id, AnswerOption answer, const std::vector<double>& likelihoods);
+    BeliefUpdateStatus update(const std::vector<double>& likelihoods_for_selected_answer);
 
     std::vector<TargetScore> top_n(std::size_t n) const;
+    const std::vector<TargetScore>& distribution() const;
 
 private:
     void normalize();
+    void reset_to_priors();
+
+    std::vector<TargetScore> priors_;
     std::vector<TargetScore> posteriors_;
 };
 

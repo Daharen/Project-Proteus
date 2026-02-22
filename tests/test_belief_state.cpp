@@ -1,11 +1,10 @@
 #include "proteus/inference/belief_state.hpp"
 
-#include <cmath>
-#include <iostream>
-#include <vector>
+#include <gtest/gtest.h>
 
-int main() {
+TEST(BeliefStateTest, AppliesLikelihoodsForSelectedAnswer) {
     using proteus::inference::BeliefState;
+    using proteus::inference::BeliefUpdateStatus;
     using proteus::inference::TargetScore;
 
     BeliefState belief({
@@ -14,19 +13,29 @@ int main() {
         TargetScore{"support", 0.2},
     });
 
-    belief.update("q1", proteus::inference::AnswerOption::Option1, {0.2, 0.5, 0.3});
+    const auto status = belief.update({0.2, 0.5, 0.3});
+    EXPECT_EQ(status, BeliefUpdateStatus::Normal);
 
     const auto top = belief.top_n(2);
-    if (top.size() != 2 || top[0].target_id != "dps") {
-        std::cerr << "unexpected ranking\n";
-        return 1;
-    }
+    ASSERT_EQ(top.size(), 2);
+    EXPECT_EQ(top[0].target_id, "dps");
+    EXPECT_GT(top[0].posterior, top[1].posterior);
+}
 
-    const auto total = top[0].posterior + top[1].posterior;
-    if (!std::isfinite(total)) {
-        std::cerr << "non-finite posterior\n";
-        return 1;
-    }
+TEST(BeliefStateTest, RecoversFromDegenerateMassByResettingToPriors) {
+    using proteus::inference::BeliefState;
+    using proteus::inference::BeliefUpdateStatus;
+    using proteus::inference::TargetScore;
 
-    return 0;
+    BeliefState belief({
+        TargetScore{"tank", 0.6},
+        TargetScore{"dps", 0.4},
+    });
+
+    const auto status = belief.update({0.0, 0.0});
+    EXPECT_EQ(status, BeliefUpdateStatus::RecoveredFromDegenerateMass);
+
+    const auto top = belief.top_n(2);
+    ASSERT_EQ(top.size(), 2);
+    EXPECT_EQ(top[0].target_id, "tank");
 }

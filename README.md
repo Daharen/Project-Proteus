@@ -27,3 +27,11 @@ ctest --test-dir build
 3. Add reinforcement-depth math with configurable compounding controls.
 4. Define novelty thresholds and offline hybrid composer grammar.
 5. Attach SQLite prototype adapters to content graph interfaces.
+
+## Inference Contract (Locked in code)
+
+- Exactly **7 total options** per question.
+- `Option1`..`Option6` are substantive choices.
+- `Unknown` is the 7th choice (`idk_index = 6`).
+- Belief updates consume likelihoods for the selected answer only.
+- Degenerate likelihood mass triggers prior reset for graceful novelty handling.
