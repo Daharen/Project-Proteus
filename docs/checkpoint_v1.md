@@ -47,3 +47,7 @@ Project Proteus is a deterministic, systemic RPG/MMO framework that:
 - Degenerate posterior mass now recovers to priors and can signal novelty fallback.
 - Added question-selection scaffold using expected entropy reduction.
 - Added novelty detection hooks and offline trace-log structs.
+
+- In-memory ContentGraph implementation added for v0 runtime loop.
+- Added interactive CLI demo that runs question selection, belief updates, trace logging, and novelty checks.
+- Novelty hooks now include repeated degenerate-mass recovery trigger.

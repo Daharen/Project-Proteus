@@ -17,7 +17,12 @@ double entropy(const std::vector<TargetScore>& scores) {
 
 NoveltyDetector::NoveltyDetector(NoveltyConfig config) : config_(config) {}
 
-NoveltySignal NoveltyDetector::evaluate(const BeliefState& belief, std::size_t asked_questions, std::size_t idk_answers) const {
+NoveltySignal NoveltyDetector::evaluate(
+    const BeliefState& belief,
+    std::size_t asked_questions,
+    std::size_t idk_answers,
+    std::size_t degenerate_recoveries
+) const {
     NoveltySignal signal;
 
     const auto& distribution = belief.distribution();
@@ -36,7 +41,9 @@ NoveltySignal NoveltyDetector::evaluate(const BeliefState& belief, std::size_t a
     signal.high_entropy = question_budget_hit && normalized_h >= config_.max_normalized_entropy;
     signal.weak_top_posterior = question_budget_hit && top < config_.min_top_posterior;
     signal.idk_overuse = idk_answers >= config_.max_idk_answers;
-    signal.triggered = signal.high_entropy || signal.weak_top_posterior || signal.idk_overuse;
+    signal.excessive_degenerate_recoveries = degenerate_recoveries >= config_.max_degenerate_recoveries;
+    signal.triggered = signal.high_entropy || signal.weak_top_posterior || signal.idk_overuse ||
+                       signal.excessive_degenerate_recoveries;
 
     return signal;
 }

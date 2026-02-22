@@ -11,6 +11,7 @@ struct NoveltyConfig {
     double min_top_posterior = 0.45;
     double max_normalized_entropy = 0.70;
     std::size_t max_idk_answers = 4;
+    std::size_t max_degenerate_recoveries = 2;
 };
 
 struct NoveltySignal {
@@ -18,13 +19,19 @@ struct NoveltySignal {
     bool high_entropy = false;
     bool weak_top_posterior = false;
     bool idk_overuse = false;
+    bool excessive_degenerate_recoveries = false;
 };
 
 class NoveltyDetector {
 public:
     explicit NoveltyDetector(NoveltyConfig config = {});
 
-    NoveltySignal evaluate(const BeliefState& belief, std::size_t asked_questions, std::size_t idk_answers) const;
+    NoveltySignal evaluate(
+        const BeliefState& belief,
+        std::size_t asked_questions,
+        std::size_t idk_answers,
+        std::size_t degenerate_recoveries
+    ) const;
 
 private:
     NoveltyConfig config_;

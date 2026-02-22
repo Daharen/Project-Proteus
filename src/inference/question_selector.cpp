@@ -1,9 +1,13 @@
 #include "proteus/inference/question_selector.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
 namespace proteus::inference {
+namespace {
+constexpr double kLikelihoodEpsilon = 1e-9;
+}
 
 std::string QuestionSelector::select_next_question(
     const BeliefState& belief,
@@ -29,30 +33,42 @@ std::string QuestionSelector::select_next_question(
 
     for (const auto& qid : candidate_question_ids) {
         double expected_posterior_entropy = 0.0;
+        double answer_mass_total = 0.0;
 
         for (std::size_t ai = 0; ai < kTotalAnswerOptions; ++ai) {
             const auto answer = static_cast<AnswerOption>(ai);
-            const auto likelihoods = graph.get_likelihoods(qid, answer, target_ids);
-            if (likelihoods.size() != posterior.size()) {
+            const auto raw_likelihoods = graph.get_likelihoods(qid, answer, target_ids);
+            if (raw_likelihoods.size() != posterior.size()) {
                 continue;
             }
 
-            double answer_prob = 0.0;
-            std::vector<double> updated(posterior.size(), 0.0);
+            std::vector<double> weighted(posterior.size(), 0.0);
+            double answer_mass = 0.0;
             for (std::size_t i = 0; i < posterior.size(); ++i) {
-                updated[i] = posterior[i].posterior * likelihoods[i];
-                answer_prob += updated[i];
-            }
-            if (answer_prob <= 0.0) {
-                continue;
-            }
-            for (auto& value : updated) {
-                value /= answer_prob;
+                const auto bounded = std::clamp(raw_likelihoods[i], 0.0, 1.0);
+                const auto likelihood = std::max(bounded, kLikelihoodEpsilon);
+                weighted[i] = posterior[i].posterior * likelihood;
+                answer_mass += weighted[i];
             }
 
-            expected_posterior_entropy += answer_prob * entropy(updated);
+            if (answer_mass <= 0.0) {
+                continue;
+            }
+
+            answer_mass_total += answer_mass;
+            for (auto& value : weighted) {
+                value /= answer_mass;
+            }
+            expected_posterior_entropy += answer_mass * entropy(weighted);
         }
 
+        if (answer_mass_total <= 0.0) {
+            continue;
+        }
+
+        // Renormalize by total modeled answer mass so sparse/partial answer support
+        // does not create arbitrary scale effects across questions.
+        expected_posterior_entropy /= answer_mass_total;
         const auto information_gain = prior_entropy - expected_posterior_entropy;
         if (information_gain > best_gain) {
             best_gain = information_gain;

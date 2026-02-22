@@ -26,6 +26,10 @@ public:
     virtual std::vector<GraphNode> nearest_targets(const std::string& node_id, std::size_t k) const = 0;
     virtual inference::Question get_question(const std::string& question_id) const = 0;
     virtual std::vector<std::string> get_candidate_targets(const std::string& domain) const = 0;
+
+    // Contract: returns values in [0,1] proportional to P(answer | target, question).
+    // Values do not need to sum to 1 across answers, but must be comparable across answers
+    // for the same question to keep information-gain selection meaningful.
     virtual std::vector<double> get_likelihoods(
         const std::string& question_id,
         inference::AnswerOption answer,

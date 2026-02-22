@@ -10,12 +10,16 @@ add_library(proteus_core
     src/inference/belief_state.cpp
     src/inference/question_selector.cpp
     src/inference/novelty_hooks.cpp
+    src/content/in_memory_graph.cpp
 )
 
 target_include_directories(proteus_core PUBLIC include)
 
 add_executable(proteus_cli src/main.cpp)
 target_link_libraries(proteus_cli PRIVATE proteus_core)
+
+add_executable(proteus_20q_demo src/cli/run_20q_demo.cpp)
+target_link_libraries(proteus_20q_demo PRIVATE proteus_core)
 
 enable_testing()
 

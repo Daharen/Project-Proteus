@@ -39,6 +39,7 @@ enum class BeliefUpdateStatus {
 
 class BeliefState {
 public:
+    // Priors are normalized on construction and stored as the fallback distribution.
     explicit BeliefState(std::vector<TargetScore> priors);
 
     BeliefUpdateStatus update(const std::vector<double>& likelihoods_for_selected_answer);

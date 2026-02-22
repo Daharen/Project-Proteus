@@ -1,4 +1,5 @@
 #include "proteus/inference/belief_state.hpp"
+#include "proteus/inference/novelty_hooks.hpp"
 
 #include <gtest/gtest.h>
 
@@ -38,4 +39,27 @@ TEST(BeliefStateTest, RecoversFromDegenerateMassByResettingToPriors) {
     const auto top = belief.top_n(2);
     ASSERT_EQ(top.size(), 2);
     EXPECT_EQ(top[0].target_id, "tank");
+}
+
+TEST(NoveltyDetectorTest, TriggersOnDegenerateRecoveries) {
+    using proteus::inference::BeliefState;
+    using proteus::inference::NoveltyDetector;
+    using proteus::inference::TargetScore;
+
+    BeliefState belief({
+        TargetScore{"a", 0.5},
+        TargetScore{"b", 0.5},
+    });
+
+    NoveltyDetector detector({
+        .max_questions = 20,
+        .min_top_posterior = 0.8,
+        .max_normalized_entropy = 0.9,
+        .max_idk_answers = 5,
+        .max_degenerate_recoveries = 2,
+    });
+
+    const auto signal = detector.evaluate(belief, 1, 0, 2);
+    EXPECT_EQ(signal.excessive_degenerate_recoveries, true);
+    EXPECT_EQ(signal.triggered, true);
 }

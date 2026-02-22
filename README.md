@@ -23,9 +23,9 @@ ctest --test-dir build
 ## Immediate Next Steps
 
 1. Finalize v1 identity axes and `PlayerContext` schema.
-2. Implement strict 7-option (+ IDK) question catalog format.
-3. Add reinforcement-depth math with configurable compounding controls.
-4. Define novelty thresholds and offline hybrid composer grammar.
+2. Harden novelty thresholds and fallback policy using live play traces.
+3. Expand reinforcement math with volatility/switching penalties and coherence bonuses.
+4. Define offline hybrid composer grammar and discriminator flow.
 5. Attach SQLite prototype adapters to content graph interfaces.
 
 ## Inference Contract (Locked in code)
@@ -35,3 +35,12 @@ ctest --test-dir build
 - `Unknown` is the 7th choice (`idk_index = 6`).
 - Belief updates consume likelihoods for the selected answer only.
 - Degenerate likelihood mass triggers prior reset for graceful novelty handling.
+
+
+## Demo
+
+Run the in-memory end-to-end 20Q loop:
+
+```bash
+./build/proteus_20q_demo
+```
