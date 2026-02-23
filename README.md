@@ -21,6 +21,16 @@ ctest --test-dir build
 ```
 
 
+## PlayerContext v1
+
+`PlayerContext` now carries the stable identity snapshot used downstream by bandits and content selection:
+
+- `identity_axes` (8 floats in `[-1, 1]`).
+- `identity_confidence` (top posterior).
+- `identity_entropy` (normalized entropy in `[0, 1]`).
+- `questions_answered` and `idk_rate` for inference depth/ambiguity.
+- `session_id` (optional, currently default `0`) and `niche_id` placeholder (default `0`).
+
 ## Identity Axes v1 (seeded in-memory)
 
 The in-memory content graph now seeds a canonical `identity` domain with:
@@ -32,7 +42,7 @@ The in-memory content graph now seeds a canonical `identity` domain with:
 
 ## Immediate Next Steps
 
-1. Wire identity inference payload into `PlayerContext` schema.
+1. Define and enforce likelihood authoring semantics/validation rules.
 2. Harden novelty thresholds and fallback policy using live play traces.
 3. Expand reinforcement math with volatility/switching penalties and coherence bonuses.
 4. Define offline hybrid composer grammar and discriminator flow.

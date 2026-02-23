@@ -1,13 +1,25 @@
 #pragma once
 
+#include "proteus/inference/identity.hpp"
+
+#include <array>
+#include <cstdint>
 #include <string>
 #include <vector>
 
 namespace proteus::bandits {
 
 struct PlayerContext {
-    std::vector<double> features;
-    std::string niche_id;
+    inference::AxisVector identity_axes{};
+
+    float identity_confidence = 0.0F;
+    float identity_entropy = 1.0F;
+
+    std::uint32_t questions_answered = 0;
+    float idk_rate = 0.0F;
+
+    std::uint64_t session_id = 0;
+    std::uint32_t niche_id = 0;
 };
 
 struct ArmSelection {

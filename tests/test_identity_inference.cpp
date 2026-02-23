@@ -1,3 +1,4 @@
+#include "proteus/bandits/contextual_bandit.hpp"
 #include "proteus/content/in_memory_graph.hpp"
 #include "proteus/inference/identity.hpp"
 
@@ -51,4 +52,27 @@ TEST(IdentityInferenceTest, BuildsDerivedAxisVectorFromPosterior) {
     EXPECT_GT(0.0F, result.derived_axes[social_idx]);
     EXPECT_GT(result.confidence.top_posterior_strength, 0.59);
     EXPECT_GT(1.0001, result.confidence.normalized_entropy);
+}
+
+
+TEST(PlayerContextTest, CapturesIdentitySignalsInCompactSchema) {
+    const proteus::inference::AxisVector axes = {0.5F, -0.1F, 0.3F, 0.7F, -0.2F, -0.8F, 0.4F, 0.9F};
+
+    const proteus::bandits::PlayerContext context{
+        .identity_axes = axes,
+        .identity_confidence = 0.77F,
+        .identity_entropy = 0.23F,
+        .questions_answered = 9,
+        .idk_rate = 2.0F / 9.0F,
+        .session_id = 0,
+        .niche_id = 0,
+    };
+
+    EXPECT_EQ(context.identity_axes.size(), proteus::inference::kIdentityAxisCount);
+    EXPECT_GT(context.identity_confidence, 0.7F);
+    EXPECT_GT(0.3F, context.identity_entropy);
+    EXPECT_EQ(context.questions_answered, 9U);
+    EXPECT_GT(context.idk_rate, 0.2F);
+    EXPECT_EQ(context.session_id, 0U);
+    EXPECT_EQ(context.niche_id, 0U);
 }

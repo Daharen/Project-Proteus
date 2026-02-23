@@ -1,3 +1,4 @@
+#include "proteus/bandits/contextual_bandit.hpp"
 #include "proteus/content/in_memory_graph.hpp"
 #include "proteus/inference/identity.hpp"
 #include "proteus/inference/novelty_hooks.hpp"
@@ -106,6 +107,17 @@ int main() {
     const auto novelty_signal = novelty.evaluate(belief, asked.size(), idk_answers, degenerate_recoveries);
     const auto result = inference::build_identity_result(belief.distribution(), archetype_map, novelty_signal, 4);
 
+
+    bandits::PlayerContext player_context{
+        .identity_axes = result.derived_axes,
+        .identity_confidence = static_cast<float>(result.confidence.top_posterior_strength),
+        .identity_entropy = static_cast<float>(result.confidence.normalized_entropy),
+        .questions_answered = static_cast<std::uint32_t>(asked.size()),
+        .idk_rate = asked.empty() ? 0.0F : static_cast<float>(idk_answers) / static_cast<float>(asked.size()),
+        .session_id = 0,
+        .niche_id = 0,
+    };
+
     std::cout << "\nPrimary archetype: " << trace.final_primary_target << "\n";
     std::cout << "Backups:\n";
     for (const auto& b : trace.final_backup_targets) {
@@ -121,6 +133,14 @@ int main() {
     std::cout << "  - top_posterior_strength: " << result.confidence.top_posterior_strength << "\n";
     std::cout << "  - normalized_entropy: " << result.confidence.normalized_entropy << "\n";
     std::cout << "  - novelty_triggered: " << (trace.novelty_triggered ? "yes" : "no") << "\n";
+
+    std::cout << "\nPlayerContext v1:\n";
+    std::cout << "  - identity_confidence: " << player_context.identity_confidence << "\n";
+    std::cout << "  - identity_entropy: " << player_context.identity_entropy << "\n";
+    std::cout << "  - questions_answered: " << player_context.questions_answered << "\n";
+    std::cout << "  - idk_rate: " << player_context.idk_rate << "\n";
+    std::cout << "  - session_id: " << player_context.session_id << "\n";
+    std::cout << "  - niche_id: " << player_context.niche_id << "\n";
 
     return 0;
 }
