@@ -49,6 +49,14 @@
   <button class="star" data-score="5">★5</button>
 
   <div style="margin-top:14px; padding:10px; border:1px solid #444;">
+    <div style="font-weight:bold; margin-bottom:6px;">Query Resolver</div>
+    <textarea id="resolverText" rows="3" cols="70" placeholder="Type query text for normalization + similarity"></textarea>
+    <br/>
+    <button id="resolveQueryBtn" type="button">Resolve Query</button>
+    <pre id="resolverOutput" style="white-space:pre-wrap; margin:8px 0 0 0;">(no query resolved yet)</pre>
+  </div>
+
+  <div style="margin-top:14px; padding:10px; border:1px solid #444;">
     <div style="font-weight:bold; margin-bottom:6px;">Player Panel</div>
     <pre id="playerPanel" style="white-space:pre-wrap; margin:0;">(no data yet)</pre>
   </div>

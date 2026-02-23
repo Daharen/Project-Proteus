@@ -35,6 +35,8 @@ struct InteractionLogRecord {
     std::string session_id;
     std::string prompt_hash;
     std::string player_context_json;
+    std::string raw_query_text;
+    std::int64_t query_id = 0;
     std::string chosen_arm;
     int novelty_flag = 0;
     double reward_signal = 0.0;

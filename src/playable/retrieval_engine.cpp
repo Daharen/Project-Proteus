@@ -3,6 +3,7 @@
 #include "proteus/playable/canonicalize.hpp"
 #include "proteus/playable/prompt_cache.hpp"
 #include "proteus/playable/proposal_schema.hpp"
+#include "proteus/query/query_identity.hpp"
 
 #include <openssl/sha.h>
 
@@ -300,6 +301,7 @@ RetrievalResult run_retrieval_detailed(
         throw std::runtime_error("Selected proposal_id not found in candidates");
     }
 
+    const std::int64_t query_id = query::GetOrCreateQueryId(db, request.raw_prompt);
     const std::string stable_player_id = request.player_context.stable_player_id.empty() ? request.session_id : request.player_context.stable_player_id;
     insert_interaction_log(
         db,
@@ -307,6 +309,8 @@ RetrievalResult run_retrieval_detailed(
             .session_id = request.session_id,
             .prompt_hash = prompt_hash,
             .player_context_json = serialize_player_context(request.player_context),
+            .raw_query_text = request.raw_prompt,
+            .query_id = query_id,
             .chosen_arm = selected.proposal_id,
             .novelty_flag = cache_hit ? 0 : 1,
             .reward_signal = 0.0,
