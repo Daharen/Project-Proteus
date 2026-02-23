@@ -1,5 +1,6 @@
 #include "proteus/persistence/sqlite_db.hpp"
 
+#include <cstdio>
 #include <filesystem>
 #include <stdexcept>
 #include <utility>
@@ -15,6 +16,21 @@ namespace {
 void check_rc(sqlite3* db, int rc, const std::string& context) {
     if (rc != SQLITE_OK) {
         throw_sqlite_error(db, context);
+    }
+}
+
+void close_db_handle(sqlite3*& db, const char* context) noexcept {
+    if (db == nullptr) {
+        return;
+    }
+
+    sqlite3* handle = db;
+    db = nullptr;
+    const int rc = sqlite3_close_v2(handle);
+    if (rc != SQLITE_OK) {
+#if !defined(NDEBUG)
+        std::fprintf(stderr, "%s: sqlite3_close_v2 failed with rc=%d (%s)\n", context, rc, sqlite3_errstr(rc));
+#endif
     }
 }
 
@@ -112,28 +128,21 @@ sqlite3_stmt* SqliteStatement::native_handle() const {
 }
 
 SqliteDb::~SqliteDb() {
-    if (db_ != nullptr) {
-        sqlite3_close(db_);
-    }
+    close_db_handle(db_, "SqliteDb::~SqliteDb");
 }
 
 SqliteDb::SqliteDb(SqliteDb&& other) noexcept : db_(std::exchange(other.db_, nullptr)) {}
 
 SqliteDb& SqliteDb::operator=(SqliteDb&& other) noexcept {
     if (this != &other) {
-        if (db_ != nullptr) {
-            sqlite3_close(db_);
-        }
+        close_db_handle(db_, "SqliteDb::operator=");
         db_ = std::exchange(other.db_, nullptr);
     }
     return *this;
 }
 
 void SqliteDb::open(const std::string& path) {
-    if (db_ != nullptr) {
-        sqlite3_close(db_);
-        db_ = nullptr;
-    }
+    close_db_handle(db_, "SqliteDb::open");
 
     std::filesystem::path fs_path(path);
     if (fs_path.has_parent_path()) {
