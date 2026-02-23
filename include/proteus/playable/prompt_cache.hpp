@@ -45,12 +45,25 @@ struct InteractionLogRecord {
     std::int64_t timestamp = 0;
 };
 
+struct ProposalStatsRecord {
+    std::string proposal_id;
+    std::int64_t shown_count = 0;
+    double reward_sum = 0.0;
+    std::int64_t reward_count = 0;
+    std::int64_t last_shown_at = 0;
+    bool last_shown_is_null = true;
+};
+
 std::optional<PromptCacheRecord> find_prompt_cache(persistence::SqliteDb& db, const std::string& prompt_hash);
 void insert_prompt_cache(persistence::SqliteDb& db, const PromptCacheRecord& record);
 void mark_prompt_cache_hit(persistence::SqliteDb& db, const std::string& prompt_hash, std::int64_t timestamp);
 
 void insert_prompt_candidate(persistence::SqliteDb& db, const PromptCandidateRecord& record);
 std::vector<std::string> list_prompt_candidate_ids(persistence::SqliteDb& db, const std::string& prompt_hash);
+void remove_prompt_candidate(persistence::SqliteDb& db, const std::string& prompt_hash, const std::string& proposal_id);
+
+int get_prompt_regen_count(persistence::SqliteDb& db, const std::string& prompt_hash);
+int increment_prompt_regen_count(persistence::SqliteDb& db, const std::string& prompt_hash);
 
 bool upsert_proposal_registry(
     persistence::SqliteDb& db,
@@ -68,6 +81,7 @@ bool log_reward_interaction_once(persistence::SqliteDb& db, const std::string& s
 
 void update_proposal_stats_on_show(persistence::SqliteDb& db, const std::string& proposal_id, std::int64_t timestamp);
 void update_proposal_stats_on_reward(persistence::SqliteDb& db, const std::string& proposal_id, double reward_value);
+std::optional<ProposalStatsRecord> get_proposal_stats(persistence::SqliteDb& db, const std::string& proposal_id);
 
 std::int64_t count_proposal_registry_rows(persistence::SqliteDb& db, const std::string& proposal_id);
 std::optional<InteractionLogRecord> latest_interaction_for_session_and_arm(

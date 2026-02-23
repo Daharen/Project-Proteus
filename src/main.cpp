@@ -50,6 +50,13 @@ std::string generate_session_uuid() {
     return std::string(out);
 }
 
+
+int pick_self_test_port() {
+    std::mt19937 rng(std::random_device{}());
+    std::uniform_int_distribution<int> dist(20000, 45000);
+    return dist(rng);
+}
+
 CliArgs parse_args(int argc, char** argv) {
     CliArgs args;
 
@@ -142,9 +149,13 @@ int main(int argc, char** argv) {
         const CliArgs args = parse_args(argc, argv);
 
         if (args.serve_mode) {
+            int server_port = args.port;
+            if (args.self_test_mode && args.port == 8080) {
+                server_port = pick_self_test_port();
+            }
             return proteus::playable::run_server(proteus::playable::HttpServerConfig{
                 .host = args.host,
-                .port = args.port,
+                .port = server_port,
                 .db_path = args.db_path,
                 .static_dir = args.static_dir,
                 .dev_mode = args.dev_mode,

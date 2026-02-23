@@ -6,6 +6,7 @@
 
 #include <openssl/sha.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <iomanip>
@@ -18,6 +19,9 @@
 namespace proteus::playable {
 
 namespace {
+
+constexpr std::int64_t kPruneMinRewardCount = 3;
+constexpr double kPruneMeanRewardThreshold = 0.25;
 
 std::int64_t unix_timestamp_now() {
     using namespace std::chrono;
@@ -82,7 +86,9 @@ std::vector<Proposal> generate_candidates(
     const std::string& prompt_hash,
     const std::string& canonical_prompt,
     const std::string& domain,
-    std::size_t k
+    std::size_t k,
+    int regen_index,
+    std::size_t start_offset
 ) {
     static constexpr std::array<const char*, 4> kTypes = {
         "quest_variant", "dialog_variant", "lore_hook", "challenge_hook"
@@ -95,20 +101,22 @@ std::vector<Proposal> generate_candidates(
     out.reserve(k);
 
     for (std::size_t i = 0; i < k; ++i) {
-        const std::string seed_str = sha256_hex(prompt_hash + "|seed|" + std::to_string(i));
+        const std::size_t idx = start_offset + i;
+        const std::string seed_material = prompt_hash + "|regen|" + std::to_string(regen_index) + "|i|" + std::to_string(idx);
+        const std::string seed_str = sha256_hex(seed_material);
         std::mt19937_64 rng(static_cast<std::mt19937_64::result_type>(std::stoull(seed_str.substr(0, 16), nullptr, 16)));
         std::uniform_real_distribution<double> bias_dist(-0.8, 0.8);
 
-        const std::string proposal_id = sha256_hex(prompt_hash + "|proposal|" + std::to_string(i));
-        const std::string type = kTypes[i % kTypes.size()];
-        const std::string tone = kTones[(i + 1) % kTones.size()];
+        const std::string proposal_id = sha256_hex(prompt_hash + "|proposal|" + seed_material);
+        const std::string type = kTypes[idx % kTypes.size()];
+        const std::string tone = kTones[(idx + 1) % kTones.size()];
 
         nlohmann::json payload;
         payload["proposal_id"] = proposal_id;
         payload["domain"] = domain;
         payload["type"] = type;
-        payload["text"] = "[" + tone + "] " + canonical_prompt + " -> " + type + " #" + std::to_string(i + 1);
-        payload["tags"] = nlohmann::json::array({"procedural", tone});
+        payload["text"] = "[" + tone + "] " + canonical_prompt + " -> " + type + " #" + std::to_string(idx + 1);
+        payload["tags"] = nlohmann::json::array({"procedural", tone, "regen_" + std::to_string(regen_index)});
         payload["axis_bias"] = nlohmann::json{{"novelty", bias_dist(rng)}, {"complexity", bias_dist(rng)}};
 
         out.push_back(Proposal{
@@ -120,6 +128,94 @@ std::vector<Proposal> generate_candidates(
     }
 
     return out;
+}
+
+void prune_prompt_candidates(persistence::SqliteDb& db, const std::string& prompt_hash) {
+    auto candidate_ids = list_prompt_candidate_ids(db, prompt_hash);
+    if (candidate_ids.size() <= kMinCandidates) {
+        return;
+    }
+
+    struct CandidateScore {
+        std::string proposal_id;
+        double mean_reward;
+        std::int64_t reward_count;
+    };
+
+    std::vector<CandidateScore> removable;
+    for (const auto& proposal_id : candidate_ids) {
+        const auto stats = get_proposal_stats(db, proposal_id);
+        if (!stats.has_value() || stats->reward_count < kPruneMinRewardCount) {
+            continue;
+        }
+        const double mean = stats->reward_sum / static_cast<double>(stats->reward_count);
+        if (mean < kPruneMeanRewardThreshold) {
+            removable.push_back(CandidateScore{proposal_id, mean, stats->reward_count});
+        }
+    }
+
+    std::sort(removable.begin(), removable.end(), [](const CandidateScore& a, const CandidateScore& b) {
+        if (a.mean_reward == b.mean_reward) {
+            return a.reward_count > b.reward_count;
+        }
+        return a.mean_reward < b.mean_reward;
+    });
+
+    for (const auto& candidate : removable) {
+        if (candidate_ids.size() <= kMinCandidates) {
+            break;
+        }
+        remove_prompt_candidate(db, prompt_hash, candidate.proposal_id);
+        candidate_ids = list_prompt_candidate_ids(db, prompt_hash);
+    }
+}
+
+void seed_prompt_candidates(
+    persistence::SqliteDb& db,
+    const std::string& prompt_hash,
+    const std::string& canonical_prompt,
+    const std::string& domain,
+    std::size_t required_count,
+    bool reseed
+) {
+    if (required_count == 0) {
+        return;
+    }
+
+    int regen_index = get_prompt_regen_count(db, prompt_hash);
+    if (reseed) {
+        regen_index = increment_prompt_regen_count(db, prompt_hash);
+    }
+
+    const auto existing_count = list_prompt_candidate_ids(db, prompt_hash).size();
+    const auto generated = generate_candidates(
+        prompt_hash,
+        canonical_prompt,
+        domain,
+        required_count,
+        regen_index,
+        existing_count
+    );
+
+    const std::int64_t now = unix_timestamp_now();
+    persistence::SqliteTransaction tx(db);
+    for (const auto& proposal : generated) {
+        const ValidationReport report = validate_proposal_json(proposal.payload);
+        if (!report.ok) {
+            throw std::runtime_error("Generated proposal failed schema validation");
+        }
+        upsert_proposal_registry(db, proposal.proposal_id, proposal.domain, proposal.payload, proposal.source, now);
+        insert_prompt_candidate(
+            db,
+            PromptCandidateRecord{
+                .prompt_hash = prompt_hash,
+                .proposal_id = proposal.proposal_id,
+                .weight = 1.0,
+                .created_at = now,
+            }
+        );
+    }
+    tx.commit();
 }
 
 }  // namespace
@@ -164,33 +260,18 @@ RetrievalResult run_retrieval_detailed(
         tx.commit();
     }
 
+    prune_prompt_candidates(db, prompt_hash);
     auto candidate_ids = list_prompt_candidate_ids(db, prompt_hash);
-    if (candidate_ids.empty() || candidate_ids.size() < kMinCandidates) {
-        const std::size_t to_generate = kMinCandidates - candidate_ids.size();
-        const auto generated = generate_candidates(prompt_hash, canonical_prompt, request.domain, kMinCandidates);
-        persistence::SqliteTransaction tx(db);
-        std::size_t added = 0;
-        for (const auto& proposal : generated) {
-            if (added >= to_generate) {
-                break;
-            }
-            const ValidationReport report = validate_proposal_json(proposal.payload);
-            if (!report.ok) {
-                throw std::runtime_error("Generated proposal failed schema validation");
-            }
-            upsert_proposal_registry(db, proposal.proposal_id, proposal.domain, proposal.payload, proposal.source, now);
-            insert_prompt_candidate(
-                db,
-                PromptCandidateRecord{
-                    .prompt_hash = prompt_hash,
-                    .proposal_id = proposal.proposal_id,
-                    .weight = 1.0,
-                    .created_at = now,
-                }
-            );
-            ++added;
-        }
-        tx.commit();
+
+    if (candidate_ids.size() < kMinCandidates) {
+        seed_prompt_candidates(
+            db,
+            prompt_hash,
+            canonical_prompt,
+            request.domain,
+            kMinCandidates - candidate_ids.size(),
+            !candidate_ids.empty()
+        );
         candidate_ids = list_prompt_candidate_ids(db, prompt_hash);
     }
 

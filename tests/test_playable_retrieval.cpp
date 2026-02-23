@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <filesystem>
 
 namespace {
@@ -167,4 +168,71 @@ TEST(PlayableCoreTest, SchemaValidationRejectsMalformedProposal) {
 
     const auto report = proteus::playable::validate_proposal_json(invalid);
     EXPECT_EQ(report.ok, false);
+}
+
+TEST(PlayableCoreTest, CandidateReseedingUsesPromptRegenCounter) {
+    const std::filesystem::path db_path = std::filesystem::temp_directory_path() / "proteus_test_reseed_regen.db";
+    std::filesystem::remove(db_path);
+
+    proteus::persistence::SqliteDb db;
+    db.open(db_path.string());
+    proteus::persistence::ensure_schema(db);
+
+    upsert_bandit_state(db, "regen", 0.0, 0.01, std::vector<double>(18, 0.0));
+    proteus::playable::BanditSelector selector(db, "regen");
+
+    const proteus::playable::RetrievalRequest req{.domain = "rpg", .raw_prompt = "regen target", .session_id = "regen-s", .policy_version = "regen"};
+    proteus::playable::run_retrieval(db, req, selector);
+
+    const auto hash = proteus::playable::compute_prompt_hash(req.policy_version, req.domain, proteus::playable::canonicalize_prompt(req.raw_prompt));
+    auto ids = proteus::playable::list_prompt_candidate_ids(db, hash);
+    ASSERT_EQ(ids.size(), proteus::playable::kMinCandidates);
+
+    proteus::playable::remove_prompt_candidate(db, hash, ids.front());
+    EXPECT_EQ(proteus::playable::list_prompt_candidate_ids(db, hash).size(), proteus::playable::kMinCandidates - 1);
+
+    proteus::playable::run_retrieval(db, req, selector);
+    ids = proteus::playable::list_prompt_candidate_ids(db, hash);
+    EXPECT_EQ(ids.size(), proteus::playable::kMinCandidates);
+    EXPECT_EQ(proteus::playable::get_prompt_regen_count(db, hash), 1);
+
+    std::filesystem::remove(db_path);
+}
+
+TEST(PlayableCoreTest, CandidatePruningRemovesWeakArmsWhenAboveMin) {
+    const std::filesystem::path db_path = std::filesystem::temp_directory_path() / "proteus_test_prune.db";
+    std::filesystem::remove(db_path);
+
+    proteus::persistence::SqliteDb db;
+    db.open(db_path.string());
+    proteus::persistence::ensure_schema(db);
+
+    upsert_bandit_state(db, "prune", 0.0, 0.01, std::vector<double>(18, 0.0));
+    proteus::playable::BanditSelector selector(db, "prune");
+
+    const proteus::playable::RetrievalRequest req{.domain = "rpg", .raw_prompt = "prune target", .session_id = "prune-s", .policy_version = "prune"};
+    proteus::playable::run_retrieval(db, req, selector);
+
+    const auto hash = proteus::playable::compute_prompt_hash(req.policy_version, req.domain, proteus::playable::canonicalize_prompt(req.raw_prompt));
+    const std::string extra_id = "extra-low";
+    nlohmann::json payload = {
+        {"proposal_id", extra_id},
+        {"domain", "rpg"},
+        {"type", "quest_variant"},
+        {"text", "weak arm"},
+        {"tags", nlohmann::json::array({"weak"})}
+    };
+    proteus::playable::upsert_proposal_registry(db, extra_id, "rpg", payload, "test", 1);
+    proteus::playable::insert_prompt_candidate(db, proteus::playable::PromptCandidateRecord{.prompt_hash = hash, .proposal_id = extra_id, .weight = 1.0, .created_at = 1});
+    db.exec("INSERT INTO proposal_stats(proposal_id, shown_count, reward_sum, reward_count, last_shown_at) VALUES('extra-low', 5, 0.0, 4, 1) "
+            "ON CONFLICT(proposal_id) DO UPDATE SET shown_count=5, reward_sum=0.0, reward_count=4, last_shown_at=1;");
+
+    EXPECT_EQ(proteus::playable::list_prompt_candidate_ids(db, hash).size(), proteus::playable::kMinCandidates + 1);
+    proteus::playable::run_retrieval(db, req, selector);
+
+    const auto ids = proteus::playable::list_prompt_candidate_ids(db, hash);
+    EXPECT_EQ(ids.size(), proteus::playable::kMinCandidates);
+    EXPECT_EQ(std::find(ids.begin(), ids.end(), extra_id) == ids.end(), true);
+
+    std::filesystem::remove(db_path);
 }

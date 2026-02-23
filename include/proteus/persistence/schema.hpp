@@ -4,7 +4,7 @@
 
 namespace proteus::persistence {
 
-inline constexpr int kSchemaVersion = 4;
+inline constexpr int kSchemaVersion = 5;
 
 void ensure_schema(SqliteDb& db);
 

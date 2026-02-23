@@ -88,6 +88,34 @@ std::vector<std::string> list_prompt_candidate_ids(persistence::SqliteDb& db, co
     return out;
 }
 
+void remove_prompt_candidate(persistence::SqliteDb& db, const std::string& prompt_hash, const std::string& proposal_id) {
+    auto stmt = db.prepare(
+        "DELETE FROM prompt_candidates WHERE prompt_hash = ?1 AND proposal_id = ?2;"
+    );
+    stmt.bind_text(1, prompt_hash);
+    stmt.bind_text(2, proposal_id);
+    stmt.step();
+}
+
+int get_prompt_regen_count(persistence::SqliteDb& db, const std::string& prompt_hash) {
+    auto stmt = db.prepare("SELECT regen_count FROM prompt_meta WHERE prompt_hash = ?1;");
+    stmt.bind_text(1, prompt_hash);
+    if (!stmt.step()) {
+        return 0;
+    }
+    return static_cast<int>(stmt.column_int64(0));
+}
+
+int increment_prompt_regen_count(persistence::SqliteDb& db, const std::string& prompt_hash) {
+    auto upsert = db.prepare(
+        "INSERT INTO prompt_meta(prompt_hash, regen_count) VALUES(?1, 1) "
+        "ON CONFLICT(prompt_hash) DO UPDATE SET regen_count = regen_count + 1;"
+    );
+    upsert.bind_text(1, prompt_hash);
+    upsert.step();
+    return get_prompt_regen_count(db, prompt_hash);
+}
+
 bool upsert_proposal_registry(
     persistence::SqliteDb& db,
     const std::string& proposal_id,
@@ -188,6 +216,26 @@ void update_proposal_stats_on_reward(persistence::SqliteDb& db, const std::strin
     stmt.bind_text(1, proposal_id);
     stmt.bind_double(2, reward_value);
     stmt.step();
+}
+
+std::optional<ProposalStatsRecord> get_proposal_stats(persistence::SqliteDb& db, const std::string& proposal_id) {
+    auto stmt = db.prepare(
+        "SELECT proposal_id, shown_count, reward_sum, reward_count, last_shown_at "
+        "FROM proposal_stats WHERE proposal_id = ?1;"
+    );
+    stmt.bind_text(1, proposal_id);
+    if (!stmt.step()) {
+        return std::nullopt;
+    }
+
+    ProposalStatsRecord record;
+    record.proposal_id = stmt.column_text(0);
+    record.shown_count = stmt.column_int64(1);
+    record.reward_sum = stmt.column_double(2);
+    record.reward_count = stmt.column_int64(3);
+    record.last_shown_is_null = stmt.column_is_null(4);
+    record.last_shown_at = record.last_shown_is_null ? 0 : stmt.column_int64(4);
+    return record;
 }
 
 std::int64_t count_proposal_registry_rows(persistence::SqliteDb& db, const std::string& proposal_id) {
