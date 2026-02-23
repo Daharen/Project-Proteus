@@ -4,6 +4,7 @@
 #include "proteus/persistence/sqlite_db.hpp"
 #include "proteus/playable/prompt_cache.hpp"
 #include "proteus/playable/retrieval_engine.hpp"
+#include "proteus/query/query_identity.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -275,6 +276,8 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
         db.exec("DROP TABLE IF EXISTS proposal_registry;");
         db.exec("DROP TABLE IF EXISTS proposal_stats;");
         db.exec("DROP TABLE IF EXISTS bandit_state;");
+        db.exec("DROP TABLE IF EXISTS query_fts;");
+        db.exec("DROP TABLE IF EXISTS query_registry;");
         db.exec("DROP TABLE IF EXISTS meta;");
         persistence::ensure_schema(db);
         send_json(res, 200, nlohmann::json{{"ok", true}});
@@ -430,6 +433,40 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
         }
 
         send_json(res, 200, nlohmann::json{{"ok", true}, {"player_id", player_id}, {"limit", static_cast<double>(limit)}, {"rows", rows}});
+    });
+
+
+    svr.Post("/api/query/resolve", [config](const httplib::Request& req, httplib::Response& res) {
+        nlohmann::json body;
+        try {
+            body = nlohmann::json::parse(req.body);
+        } catch (const std::exception&) {
+            send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"Malformed JSON"})}});
+            return;
+        }
+        if (!body.contains("text") || !body.at("text").is_string()) {
+            send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"text is required"})}});
+            return;
+        }
+
+        const int limit = body.contains("limit") && body.at("limit").is_number()
+            ? std::max(1, std::min(25, static_cast<int>(body.at("limit").get<double>())))
+            : 5;
+        const double min_score = body.contains("min_score") && body.at("min_score").is_number()
+            ? std::max(0.0, std::min(1.0, body.at("min_score").get<double>()))
+            : 0.2;
+
+        persistence::SqliteDb db;
+        db.open(config.db_path);
+        persistence::ensure_schema(db);
+
+        const auto resolved = query::ResolveQuery(db, body.at("text").get<std::string>(), limit, min_score);
+        nlohmann::json similar = nlohmann::json::array({});
+        for (const auto& item : resolved.similar) {
+            similar.push_back(nlohmann::json{{"query_id", static_cast<double>(item.query_id)}, {"score", item.score}});
+        }
+
+        send_json(res, 200, nlohmann::json{{"ok", true}, {"query_id", static_cast<double>(resolved.query_id)}, {"normalized", resolved.normalized}, {"hash64", std::to_string(resolved.hash64)}, {"similar", similar}});
     });
 
     svr.Post("/query", [config](const httplib::Request& req, httplib::Response& res) {
@@ -714,7 +751,7 @@ int run_server(const HttpServerConfig& input_config) {
               << "  cwd=" << cwd.string() << "\n";
 
     persistence::SqliteDb db;
-    persistence::open_and_migrate(db, config.db_path);
+    persistence::open_and_migrate(db, config.db_path, config.verbose);
 
     httplib::Server svr;
     svr.set_payload_max_length(kMaxBodyBytes);

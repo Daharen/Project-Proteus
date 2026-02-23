@@ -161,31 +161,37 @@ Proposal load_proposal(persistence::SqliteDb& db, const std::string& proposal_id
 void insert_interaction_log(persistence::SqliteDb& db, const InteractionLogRecord& record) {
     auto stmt = db.prepare(
         "INSERT INTO interaction_log("
-        "session_id, prompt_hash, player_context_json, chosen_arm, novelty_flag, reward_signal, reward_applied, selection_seed, decision_features_json, stable_player_id, base_score, topology_modifier, final_score, timestamp"
-        ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14);"
+        "session_id, prompt_hash, player_context_json, raw_query_text, query_id, chosen_arm, novelty_flag, reward_signal, reward_applied, selection_seed, decision_features_json, stable_player_id, base_score, topology_modifier, final_score, timestamp"
+        ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16);"
     );
     stmt.bind_text(1, record.session_id);
     stmt.bind_text(2, record.prompt_hash);
     stmt.bind_text(3, record.player_context_json);
-    stmt.bind_text(4, record.chosen_arm);
-    stmt.bind_int64(5, record.novelty_flag);
+    stmt.bind_text(4, record.raw_query_text);
+    if (record.query_id <= 0) {
+        stmt.bind_null(5);
+    } else {
+        stmt.bind_int64(5, record.query_id);
+    }
+    stmt.bind_text(6, record.chosen_arm);
+    stmt.bind_int64(7, record.novelty_flag);
     if (record.reward_is_null) {
-        stmt.bind_null(6);
+        stmt.bind_null(8);
     } else {
-        stmt.bind_double(6, record.reward_signal);
+        stmt.bind_double(8, record.reward_signal);
     }
-    stmt.bind_int64(7, record.reward_applied);
-    stmt.bind_int64(8, record.selection_seed);
-    stmt.bind_text(9, record.decision_features_json);
+    stmt.bind_int64(9, record.reward_applied);
+    stmt.bind_int64(10, record.selection_seed);
+    stmt.bind_text(11, record.decision_features_json);
     if (record.stable_player_id.empty()) {
-        stmt.bind_null(10);
+        stmt.bind_null(12);
     } else {
-        stmt.bind_text(10, record.stable_player_id);
+        stmt.bind_text(12, record.stable_player_id);
     }
-    stmt.bind_double(11, record.base_score);
-    stmt.bind_double(12, record.topology_modifier);
-    stmt.bind_double(13, record.final_score);
-    stmt.bind_int64(14, record.timestamp);
+    stmt.bind_double(13, record.base_score);
+    stmt.bind_double(14, record.topology_modifier);
+    stmt.bind_double(15, record.final_score);
+    stmt.bind_int64(16, record.timestamp);
     stmt.step();
 }
 
@@ -259,7 +265,7 @@ std::optional<InteractionLogRecord> latest_interaction_for_session_and_arm(
     const std::string& proposal_id
 ) {
     auto stmt = db.prepare(
-        "SELECT id, session_id, prompt_hash, player_context_json, chosen_arm, novelty_flag, reward_signal, reward_applied, selection_seed, decision_features_json, stable_player_id, base_score, topology_modifier, final_score, timestamp "
+        "SELECT id, session_id, prompt_hash, player_context_json, raw_query_text, query_id, chosen_arm, novelty_flag, reward_signal, reward_applied, selection_seed, decision_features_json, stable_player_id, base_score, topology_modifier, final_score, timestamp "
         "FROM interaction_log WHERE session_id = ?1 AND chosen_arm = ?2 ORDER BY id DESC LIMIT 1;"
     );
     stmt.bind_text(1, session_id);
@@ -273,18 +279,20 @@ std::optional<InteractionLogRecord> latest_interaction_for_session_and_arm(
     out.session_id = stmt.column_text(1);
     out.prompt_hash = stmt.column_text(2);
     out.player_context_json = stmt.column_text(3);
-    out.chosen_arm = stmt.column_text(4);
-    out.novelty_flag = static_cast<int>(stmt.column_int64(5));
-    out.reward_is_null = stmt.column_is_null(6);
-    out.reward_signal = out.reward_is_null ? 0.0 : stmt.column_double(6);
-    out.reward_applied = static_cast<int>(stmt.column_int64(7));
-    out.selection_seed = stmt.column_int64(8);
-    out.decision_features_json = stmt.column_is_null(9) ? std::string{} : stmt.column_text(9);
-    out.stable_player_id = stmt.column_is_null(10) ? std::string{} : stmt.column_text(10);
-    out.base_score = stmt.column_is_null(11) ? 0.0 : stmt.column_double(11);
-    out.topology_modifier = stmt.column_is_null(12) ? 0.0 : stmt.column_double(12);
-    out.final_score = stmt.column_is_null(13) ? 0.0 : stmt.column_double(13);
-    out.timestamp = stmt.column_int64(14);
+    out.raw_query_text = stmt.column_is_null(4) ? std::string{} : stmt.column_text(4);
+    out.query_id = stmt.column_is_null(5) ? 0 : stmt.column_int64(5);
+    out.chosen_arm = stmt.column_text(6);
+    out.novelty_flag = static_cast<int>(stmt.column_int64(7));
+    out.reward_is_null = stmt.column_is_null(8);
+    out.reward_signal = out.reward_is_null ? 0.0 : stmt.column_double(8);
+    out.reward_applied = static_cast<int>(stmt.column_int64(9));
+    out.selection_seed = stmt.column_int64(10);
+    out.decision_features_json = stmt.column_is_null(11) ? std::string{} : stmt.column_text(11);
+    out.stable_player_id = stmt.column_is_null(12) ? std::string{} : stmt.column_text(12);
+    out.base_score = stmt.column_is_null(13) ? 0.0 : stmt.column_double(13);
+    out.topology_modifier = stmt.column_is_null(14) ? 0.0 : stmt.column_double(14);
+    out.final_score = stmt.column_is_null(15) ? 0.0 : stmt.column_double(15);
+    out.timestamp = stmt.column_int64(16);
     return out;
 }
 

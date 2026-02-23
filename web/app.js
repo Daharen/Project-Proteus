@@ -159,3 +159,23 @@ document.getElementById('thumbDown').addEventListener('click', () => sendReward(
 loadSession();
 loadPlayerId();
 refreshPlayerPanel();
+
+
+async function resolveQueryDebug() {
+  const text = (document.getElementById("resolverText")?.value || "").trim();
+  const output = document.getElementById("resolverOutput");
+  if (!output) return;
+  if (!text.length) {
+    output.textContent = "Enter some query text first.";
+    return;
+  }
+
+  try {
+    const data = await postJson('/api/query/resolve', { text, limit: 5, min_score: 0.2 });
+    output.textContent = JSON.stringify(data, null, 2);
+  } catch (e) {
+    output.textContent = `Query resolve failed: ${e}`;
+  }
+}
+
+document.getElementById('resolveQueryBtn')?.addEventListener('click', resolveQueryDebug);

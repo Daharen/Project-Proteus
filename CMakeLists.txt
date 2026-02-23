@@ -1,12 +1,13 @@
 cmake_minimum_required(VERSION 3.20)
-project(ProjectProteus LANGUAGES CXX)
+project(ProjectProteus LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-find_package(SQLite3 REQUIRED)
 find_package(OpenSSL REQUIRED)
+
+add_subdirectory(third_party/sqlite)
 
 add_library(proteus_core
     src/simulation/entity.cpp
@@ -26,18 +27,16 @@ add_library(proteus_core
     src/playable/proposal_selector.cpp
     src/playable/retrieval_engine.cpp
     src/playable/http_server.cpp
+    src/query/query_identity.cpp
 )
 
-target_include_directories(proteus_core PUBLIC include)
-if(TARGET SQLite3::SQLite3)
-    set(PROTEUS_SQLITE_TARGET SQLite3::SQLite3)
-elseif(TARGET SQLite::SQLite3)
-    set(PROTEUS_SQLITE_TARGET SQLite::SQLite3)
-else()
-    message(FATAL_ERROR "No compatible SQLite CMake target found (expected SQLite3::SQLite3 or SQLite::SQLite3)")
-endif()
+target_include_directories(proteus_core
+    PUBLIC
+        third_party/sqlite
+        include
+)
 
-target_link_libraries(proteus_core PUBLIC ${PROTEUS_SQLITE_TARGET} OpenSSL::Crypto)
+target_link_libraries(proteus_core PUBLIC proteus_sqlite OpenSSL::Crypto)
 
 add_executable(proteus_cli src/main.cpp)
 set_target_properties(proteus_cli PROPERTIES OUTPUT_NAME proteus)
@@ -53,6 +52,7 @@ add_executable(proteus_tests
     tests/test_belief_state.cpp
     tests/test_identity_inference.cpp
     tests/test_playable_retrieval.cpp
+    tests/test_query_identity.cpp
 )
 target_include_directories(proteus_tests PRIVATE tests/third_party)
 target_link_libraries(proteus_tests PRIVATE proteus_core)

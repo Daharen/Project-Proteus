@@ -2,7 +2,9 @@
 #include "proteus/persistence/sqlite_db.hpp"
 #include "proteus/playable/http_server.hpp"
 #include "proteus/playable/retrieval_engine.hpp"
+#include "proteus/query/query_identity.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <iostream>
@@ -10,18 +12,24 @@
 #include <stdexcept>
 #include <string>
 
+#include <nlohmann/json.hpp>
+
 namespace {
 
 enum class CliMode {
     Query,
     Serve,
     Migrate,
+    QueryResolve,
     Help,
 };
 
 struct CliArgs {
     CliMode mode = CliMode::Query;
     bool serve_help = false;
+    std::string query_text;
+    int query_top = 5;
+    double min_score = 0.2;
     std::string domain;
     std::string prompt;
     std::string session_id;
@@ -35,6 +43,7 @@ struct CliArgs {
     bool dev_mode = false;
     bool self_test_mode = false;
     bool smoke_mode = false;
+    bool verbose = false;
 };
 
 std::string generate_session_uuid() {
@@ -64,13 +73,15 @@ void print_help() {
         << "Usage:\n"
         << "  proteus --domain <domain> --prompt <prompt> [--db <path>] [--session <id>]\n"
         << "  proteus --reward <value> --proposal_id <id> [--session <id>] [--db <path>]\n"
-        << "  proteus --migrate [--db <path>]\n"
-        << "  proteus serve [--host 127.0.0.1] [--port 8080] [--db <path>] [--static_root <path>] [--dev] [--smoke]\n"
+        << "  proteus --migrate [--db <path>] [--verbose]\n"
+        << "  proteus serve [--host 127.0.0.1] [--port 8080] [--db <path>] [--static_root <path>] [--dev] [--smoke] [--verbose]\n"
+        << "  proteus query --db <path> --text \"<raw>\" [--top 5] [--min_score 0.2]\n"
         << "\n"
         << "Modes:\n"
         << "  query (default): use --domain/--prompt\n"
         << "  serve: start local web server and API\n"
-        << "  migrate: apply DB migrations to latest schema version\n";
+        << "  migrate: apply DB migrations to latest schema version\n"
+        << "  query: resolve canonical query identity + similar matches\n";
 }
 
 void print_serve_help() {
@@ -84,6 +95,7 @@ void print_serve_help() {
         << "  --static_root <path>    Static web root (default auto-detected repo web/)\n"
         << "  --dev                   Enable dev endpoints\n"
         << "  --smoke                 Bind/listen probe, print SMOKE_OK, then shutdown\n"
+        << "  --verbose               Log SQLite compile options at startup\n"
         << "  --help                  Show serve help\n";
 }
 
@@ -95,6 +107,9 @@ CliArgs parse_args(int argc, char** argv) {
         const std::string first = argv[1];
         if (first == "serve") {
             args.mode = CliMode::Serve;
+            start_index = 2;
+        } else if (first == "query") {
+            args.mode = CliMode::QueryResolve;
             start_index = 2;
         }
     }
@@ -123,6 +138,18 @@ CliArgs parse_args(int argc, char** argv) {
         }
         if (current == "--db" && i + 1 < argc) {
             args.db_path = argv[++i];
+            continue;
+        }
+        if (current == "--text" && i + 1 < argc) {
+            args.query_text = argv[++i];
+            continue;
+        }
+        if (current == "--top" && i + 1 < argc) {
+            args.query_top = std::stoi(argv[++i]);
+            continue;
+        }
+        if (current == "--min_score" && i + 1 < argc) {
+            args.min_score = std::stod(argv[++i]);
             continue;
         }
         if (current == "--session" && i + 1 < argc) {
@@ -156,6 +183,10 @@ CliArgs parse_args(int argc, char** argv) {
             args.mode = CliMode::Serve;
             continue;
         }
+        if (current == "--verbose") {
+            args.verbose = true;
+            continue;
+        }
         if (current == "--host" && i + 1 < argc) {
             args.host = argv[++i];
             continue;
@@ -176,6 +207,16 @@ CliArgs parse_args(int argc, char** argv) {
     }
 
     if (args.mode == CliMode::Migrate) {
+        return args;
+    }
+
+    if (args.mode == CliMode::QueryResolve) {
+        if (args.query_text.empty()) {
+            throw std::runtime_error("query mode requires --text");
+        }
+        args.query_top = std::max(1, std::min(args.query_top, 25));
+        if (args.min_score < 0.0) args.min_score = 0.0;
+        if (args.min_score > 1.0) args.min_score = 1.0;
         return args;
     }
 
@@ -231,7 +272,7 @@ int main(int argc, char** argv) {
 
         if (args.mode == CliMode::Migrate) {
             proteus::persistence::SqliteDb db;
-            proteus::persistence::open_and_migrate(db, args.db_path);
+            proteus::persistence::open_and_migrate(db, args.db_path, args.verbose);
             std::cout << "MIGRATE_OK version=" << proteus::persistence::kSchemaVersion << "\n";
             return 0;
         }
@@ -245,11 +286,23 @@ int main(int argc, char** argv) {
                 .dev_mode = args.dev_mode,
                 .self_test_mode = args.self_test_mode,
                 .smoke_mode = args.smoke_mode,
+                .verbose = args.verbose,
             });
         }
 
         proteus::persistence::SqliteDb db;
-        proteus::persistence::open_and_migrate(db, args.db_path);
+        proteus::persistence::open_and_migrate(db, args.db_path, args.verbose);
+
+        if (args.mode == CliMode::QueryResolve) {
+            const auto resolved = proteus::query::ResolveQuery(db, args.query_text, args.query_top, args.min_score);
+            nlohmann::json similar = nlohmann::json::array({});
+            for (const auto& item : resolved.similar) {
+                similar.push_back(nlohmann::json{{"query_id", static_cast<double>(item.query_id)}, {"score", item.score}});
+            }
+            std::cout << nlohmann::json{{"normalized", resolved.normalized}, {"hash64", std::to_string(resolved.hash64)}, {"query_id", static_cast<double>(resolved.query_id)}, {"similar", similar}}.dump(2) << '\n';
+            return 0;
+        }
+
         proteus::playable::BanditSelector selector(db, proteus::playable::kPlayableCorePolicyVersion);
 
         if (args.reward_mode) {

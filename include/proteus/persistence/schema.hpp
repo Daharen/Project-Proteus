@@ -6,9 +6,9 @@
 
 namespace proteus::persistence {
 
-inline constexpr int kSchemaVersion = 6;
+inline constexpr int kSchemaVersion = 7;
 
 void ensure_schema(SqliteDb& db);
-void open_and_migrate(SqliteDb& db, const std::string& db_path);
+void open_and_migrate(SqliteDb& db, const std::string& db_path, bool verbose = false);
 
 }  // namespace proteus::persistence

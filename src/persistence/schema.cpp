@@ -1,6 +1,8 @@
 #include "proteus/persistence/schema.hpp"
 
+#include <cstdlib>
 #include <filesystem>
+#include <iostream>
 #include <stdexcept>
 #include <string>
 
@@ -161,6 +163,78 @@ void migrate_5_to_6(SqliteDb& db) {
     db.exec("CREATE INDEX IF NOT EXISTS idx_interaction_log_stable_player_id ON interaction_log(stable_player_id);");
 }
 
+void migrate_6_to_7(SqliteDb& db) {
+    db.exec(
+        "CREATE TABLE IF NOT EXISTS query_registry("
+        "query_id INTEGER PRIMARY KEY,"
+        "normalized_text TEXT NOT NULL,"
+        "raw_example TEXT NOT NULL,"
+        "hash64 INTEGER NOT NULL UNIQUE,"
+        "created_at_utc TEXT NOT NULL"
+        ");"
+    );
+    db.exec("CREATE INDEX IF NOT EXISTS idx_query_registry_hash64 ON query_registry(hash64);");
+
+    db.exec(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS query_fts USING fts5("
+        "normalized_text,"
+        "content='query_registry',"
+        "content_rowid='query_id'"
+        ");"
+    );
+
+    db.exec(
+        "CREATE TRIGGER IF NOT EXISTS query_registry_ai AFTER INSERT ON query_registry BEGIN "
+        "INSERT INTO query_fts(rowid, normalized_text) VALUES (new.query_id, new.normalized_text);"
+        "END;"
+    );
+    db.exec(
+        "CREATE TRIGGER IF NOT EXISTS query_registry_ad AFTER DELETE ON query_registry BEGIN "
+        "INSERT INTO query_fts(query_fts, rowid, normalized_text) VALUES('delete', old.query_id, old.normalized_text);"
+        "END;"
+    );
+    db.exec(
+        "CREATE TRIGGER IF NOT EXISTS query_registry_au AFTER UPDATE ON query_registry BEGIN "
+        "INSERT INTO query_fts(query_fts, rowid, normalized_text) VALUES('delete', old.query_id, old.normalized_text);"
+        "INSERT INTO query_fts(rowid, normalized_text) VALUES (new.query_id, new.normalized_text);"
+        "END;"
+    );
+    db.exec(
+        "INSERT INTO query_fts(rowid, normalized_text) "
+        "SELECT query_id, normalized_text FROM query_registry "
+        "WHERE query_id NOT IN (SELECT rowid FROM query_fts);"
+    );
+
+    if (!table_exists(db, "interaction_log")) {
+        migrate_2_to_3(db);
+    }
+    if (!column_exists(db, "interaction_log", "raw_query_text")) {
+        db.exec("ALTER TABLE interaction_log ADD COLUMN raw_query_text TEXT;");
+    }
+    if (!column_exists(db, "interaction_log", "query_id")) {
+        db.exec("ALTER TABLE interaction_log ADD COLUMN query_id INTEGER;");
+    }
+    db.exec("CREATE INDEX IF NOT EXISTS idx_interaction_log_query_id ON interaction_log(query_id);");
+}
+
+
+void verify_sqlite_capabilities(SqliteDb& db, bool verbose) {
+    auto fts_stmt = db.prepare("SELECT sqlite_compileoption_used('ENABLE_FTS5');");
+    if (!fts_stmt.step() || fts_stmt.column_int64(0) == 0) {
+        throw std::runtime_error("SQLite build missing ENABLE_FTS5 (required)");
+    }
+
+    const bool log_opts = verbose || (std::getenv("PROTEUS_LOG_SQLITE_OPTS") != nullptr);
+    if (!log_opts) {
+        return;
+    }
+
+    auto opt_stmt = db.prepare("PRAGMA compile_options;");
+    std::cerr << "[sqlite] compile_options:" << std::endl;
+    while (opt_stmt.step()) {
+        std::cerr << "  - " << opt_stmt.column_text(0) << std::endl;
+    }
+}
 void apply_migration(SqliteDb& db, int from_version) {
     switch (from_version) {
         case 0: migrate_0_to_1(db); return;
@@ -169,6 +243,7 @@ void apply_migration(SqliteDb& db, int from_version) {
         case 3: migrate_3_to_4(db); return;
         case 4: migrate_4_to_5(db); return;
         case 5: migrate_5_to_6(db); return;
+        case 6: migrate_6_to_7(db); return;
         default: throw std::runtime_error("Unsupported schema version: " + std::to_string(from_version));
     }
 }
@@ -192,8 +267,9 @@ void ensure_schema(SqliteDb& db) {
     tx.commit();
 }
 
-void open_and_migrate(SqliteDb& db, const std::string& db_path) {
+void open_and_migrate(SqliteDb& db, const std::string& db_path, bool verbose) {
     db.open(db_path);
+    verify_sqlite_capabilities(db, verbose);
     ensure_schema(db);
 }
 
