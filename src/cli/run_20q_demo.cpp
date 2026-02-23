@@ -16,18 +16,20 @@ int main() {
     content::InMemoryContentGraph graph;
     graph.seed_identity_v1_domain();
 
-    const auto validation = graph.validate_likelihood_tables(domain);
+    const auto validation = graph.validate_likelihood_tables(domain, content::InMemoryContentGraph::ValidationMode::WarnOnly);
     if (!validation.hard_violations.empty()) {
         std::cerr << "Likelihood validation hard violations:\n";
         for (const auto& issue : validation.hard_violations) {
-            std::cerr << "  - " << issue.question_id << ": " << issue.message << "\n";
+            std::cerr << "  - [" << issue.rule_name << "] " << issue.question_id << ": " << issue.message << " (" << issue.metric << ")\n";
+            std::cerr << "    hint: " << issue.hint << "\n";
         }
         return 1;
     }
     if (!validation.warnings.empty()) {
         std::cerr << "Likelihood validation warnings:\n";
         for (const auto& issue : validation.warnings) {
-            std::cerr << "  - " << issue.question_id << ": " << issue.message << "\n";
+            std::cerr << "  - [" << issue.rule_name << "] " << issue.question_id << ": " << issue.message << " (" << issue.metric << ")\n";
+            std::cerr << "    hint: " << issue.hint << "\n";
         }
     }
 

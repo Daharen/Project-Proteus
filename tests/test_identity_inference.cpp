@@ -16,7 +16,7 @@ TEST(IdentityInferenceTest, SeedsIdentityDomainAndValidatesLikelihoods) {
     const auto questions = graph.get_domain_questions("identity");
     EXPECT_EQ(questions.size(), 15);
 
-    const auto report = graph.validate_likelihood_tables("identity");
+    const auto report = graph.validate_likelihood_tables("identity", proteus::content::InMemoryContentGraph::ValidationMode::WarnOnly);
     EXPECT_EQ(report.ok, true);
     EXPECT_EQ(report.hard_violations.empty(), true);
 }
@@ -96,4 +96,22 @@ TEST(IdentityInferenceTest, LikelihoodTablesArePerTargetNormalized) {
             EXPECT_GT(sum, 0.999);
         }
     }
+}
+
+
+TEST(IdentityInferenceTest, StrictModePromotesWarningsToFailures) {
+    proteus::content::InMemoryContentGraph graph;
+    graph.seed_identity_v1_domain();
+
+    proteus::inference::LikelihoodValidationParams params;
+    params.substantive_min_ratio = 100.0;
+
+    const auto report = graph.validate_likelihood_tables(
+        "identity",
+        proteus::content::InMemoryContentGraph::ValidationMode::Strict,
+        params
+    );
+
+    EXPECT_EQ(report.ok, false);
+    EXPECT_GT(report.hard_violations.size(), 0U);
 }

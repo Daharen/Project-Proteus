@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <numeric>
+#include <string>
 #include <stdexcept>
 
 namespace proteus::content {
@@ -177,32 +178,38 @@ std::vector<std::string> InMemoryContentGraph::get_domain_questions(const std::s
     return it->second;
 }
 
-InMemoryContentGraph::LikelihoodValidationReport InMemoryContentGraph::validate_likelihood_tables(const std::string& domain) const {
-    constexpr double kEpsilon = 1e-6;
-    constexpr double kSubstantiveMinRatio = 2.0;
-    constexpr double kAnswerDuplicateCosineMax = 0.995;
-    constexpr double kIdkMaxKlBits = 0.02;
-    constexpr double kQuestionMinIgBits = 0.02;
-
+InMemoryContentGraph::LikelihoodValidationReport InMemoryContentGraph::validate_likelihood_tables(
+    const std::string& domain,
+    ValidationMode mode,
+    inference::LikelihoodValidationParams params
+) const {
     LikelihoodValidationReport report;
+
+    const auto add_warning = [&](const std::string& qid, const std::string& rule, const std::string& metric, const std::string& hint, const std::string& message) {
+        report.warnings.push_back({qid, rule, message, metric, hint, ValidationSeverity::Warning});
+    };
+    const auto add_hard = [&](const std::string& qid, const std::string& rule, const std::string& metric, const std::string& hint, const std::string& message) {
+        report.ok = false;
+        report.hard_violations.push_back({qid, rule, message, metric, hint, ValidationSeverity::HardViolation});
+    };
 
     const auto domain_it = targets_by_domain_.find(domain);
     if (domain_it == targets_by_domain_.end()) {
-        report.ok = false;
-        report.hard_violations.push_back({"<domain>", "domain has no targets", ValidationSeverity::HardViolation});
-        return report;
+        add_hard("<domain>", "domain_targets_present", "targets=0", "Seed domain targets before validation.", "domain has no targets");
     }
 
     const auto qit = questions_by_domain_.find(domain);
     if (qit == questions_by_domain_.end() || qit->second.empty()) {
-        report.ok = false;
-        report.hard_violations.push_back({"<domain>", "domain has no questions", ValidationSeverity::HardViolation});
+        add_hard("<domain>", "domain_questions_present", "questions=0", "Seed domain questions before validation.", "domain has no questions");
+    }
+
+    if (!report.hard_violations.empty()) {
         return report;
     }
 
     const auto& targets = domain_it->second;
     const auto uniform_prior = std::vector<double>(targets.size(), 1.0 / static_cast<double>(targets.size()));
-    const auto prior_entropy = entropy_bits(uniform_prior);
+    const auto prior_entropy_bits = entropy_bits(uniform_prior);
 
     for (const auto& qid : qit->second) {
         std::vector<std::vector<double>> answer_rows;
@@ -211,34 +218,50 @@ InMemoryContentGraph::LikelihoodValidationReport InMemoryContentGraph::validate_
         for (std::size_t answer_index = 0; answer_index < inference::kTotalAnswerOptions; ++answer_index) {
             const auto likelihoods = get_likelihoods(qid, static_cast<inference::AnswerOption>(answer_index), targets);
             if (likelihoods.size() != targets.size()) {
-                report.ok = false;
-                report.hard_violations.push_back({qid, "wrong likelihood vector length", ValidationSeverity::HardViolation});
+                add_hard(qid, "vector_length", "expected=" + std::to_string(targets.size()) + ",actual=" + std::to_string(likelihoods.size()), "Ensure one likelihood per target.", "wrong likelihood vector length");
                 continue;
             }
 
+            bool numeric_failure = false;
             for (const auto value : likelihoods) {
                 if (!std::isfinite(value)) {
-                    report.ok = false;
-                    report.hard_violations.push_back({qid, "contains NaN or Inf likelihood", ValidationSeverity::HardViolation});
+                    add_hard(qid, "finite_values", "value=nan_or_inf", "Replace NaN/Inf with finite probabilities.", "contains NaN or Inf likelihood");
+                    numeric_failure = true;
                     break;
                 }
                 if (value <= 0.0) {
-                    report.ok = false;
-                    report.hard_violations.push_back({qid, "contains non-positive likelihood", ValidationSeverity::HardViolation});
+                    add_hard(qid, "positive_values", "value=" + std::to_string(value), "Apply epsilon floor to keep likelihoods positive.", "contains non-positive likelihood");
+                    numeric_failure = true;
                     break;
                 }
             }
+            if (numeric_failure) {
+                continue;
+            }
+
             answer_rows.push_back(likelihoods);
 
             const auto [min_it, max_it] = std::minmax_element(likelihoods.begin(), likelihoods.end());
-            if (*min_it <= kEpsilon) {
-                report.warnings.push_back({qid, "contains near-epsilon likelihood", ValidationSeverity::Warning});
+            if (*min_it <= params.epsilon * params.near_epsilon_ratio) {
+                add_warning(
+                    qid,
+                    "near_epsilon",
+                    "min=" + std::to_string(*min_it),
+                    "Increase baseline weights to avoid brittle posteriors.",
+                    "contains near-epsilon likelihood"
+                );
             }
 
             if (answer_index != inference::kIdkIndex) {
-                const auto ratio = *max_it / std::max(*min_it, kEpsilon);
-                if (ratio < kSubstantiveMinRatio) {
-                    report.warnings.push_back({qid, "substantive answer under differentiability ratio", ValidationSeverity::Warning});
+                const auto ratio = *max_it / std::max(*min_it, params.epsilon);
+                if (ratio < params.substantive_min_ratio) {
+                    add_warning(
+                        qid,
+                        "substantive_min_ratio",
+                        "max_min_ratio=" + std::to_string(ratio),
+                        "This answer row is near-uniform; consider increasing weights for 2-3 archetypes.",
+                        "substantive answer under differentiability ratio"
+                    );
                 }
             }
         }
@@ -252,41 +275,74 @@ InMemoryContentGraph::LikelihoodValidationReport InMemoryContentGraph::validate_
             for (std::size_t a = 0; a < inference::kTotalAnswerOptions; ++a) {
                 sum_across_answers += answer_rows[a][t];
             }
-            if (std::abs(sum_across_answers - 1.0) > 1e-3) {
-                report.ok = false;
-                report.hard_violations.push_back({qid, "per-target normalization violated", ValidationSeverity::HardViolation});
+            if (std::abs(sum_across_answers - 1.0) > params.normalization_tol) {
+                add_hard(
+                    qid,
+                    "per_target_normalization",
+                    "sum=" + std::to_string(sum_across_answers),
+                    "Normalize each target column so sum across answers equals 1.",
+                    "per-target normalization violated"
+                );
                 break;
             }
         }
 
         for (std::size_t a = 0; a < inference::kTotalAnswerOptions; ++a) {
             for (std::size_t b = a + 1; b < inference::kTotalAnswerOptions; ++b) {
-                if (cosine_similarity(answer_rows[a], answer_rows[b]) >= kAnswerDuplicateCosineMax) {
-                    report.warnings.push_back({qid, "two answers are nearly duplicates", ValidationSeverity::Warning});
+                const auto cosine = cosine_similarity(answer_rows[a], answer_rows[b]);
+                if (cosine >= params.answer_cosine_dup) {
+                    add_warning(
+                        qid,
+                        "answer_cosine_dup",
+                        "cosine=" + std::to_string(cosine),
+                        "Differentiate neighboring answers to avoid redundant signals.",
+                        "two answers are nearly duplicates"
+                    );
                 }
             }
         }
 
-        // IDK should have low posterior impact from a neutral prior.
+        // IDK metrics are evaluated on the IDK row across targets.
+        // Primary rule: KL bits between IDK posterior and uniform target distribution.
         const auto& idk = answer_rows[inference::kIdkIndex];
+        const auto [idk_min_it, idk_max_it] = std::minmax_element(idk.begin(), idk.end());
+        const auto idk_uniform_ratio = *idk_max_it / std::max(*idk_min_it, params.epsilon);
+        if (idk_uniform_ratio > params.idk_uniform_ratio) {
+            add_warning(
+                qid,
+                "idk_uniform_ratio",
+                "max_min_ratio=" + std::to_string(idk_uniform_ratio),
+                "Make IDK more uniform across targets.",
+                "IDK row is not near-uniform"
+            );
+        }
+
         double mass = 0.0;
         for (std::size_t t = 0; t < targets.size(); ++t) {
             mass += uniform_prior[t] * idk[t];
         }
         std::vector<double> idk_posterior(targets.size(), 0.0);
         for (std::size_t t = 0; t < targets.size(); ++t) {
-            idk_posterior[t] = (uniform_prior[t] * idk[t]) / std::max(mass, kEpsilon);
+            idk_posterior[t] = (uniform_prior[t] * idk[t]) / std::max(mass, params.epsilon);
         }
-        double idk_kl = 0.0;
+        double idk_kl_bits = 0.0;
         for (std::size_t t = 0; t < targets.size(); ++t) {
-            idk_kl += idk_posterior[t] * std::log2(idk_posterior[t] / uniform_prior[t]);
+            idk_kl_bits += idk_posterior[t] * std::log2(idk_posterior[t] / uniform_prior[t]);
         }
-        if (idk_kl > kIdkMaxKlBits) {
-            report.warnings.push_back({qid, "IDK has high posterior impact", ValidationSeverity::Warning});
+        if (idk_kl_bits > params.idk_kl_max_bits) {
+            add_warning(
+                qid,
+                "idk_kl_bits",
+                "kl_bits=" + std::to_string(idk_kl_bits),
+                "Reduce IDK target skew so IDK has lower posterior impact.",
+                "IDK KL-to-uniform is too high"
+            );
         }
 
-        // Expected information gain under neutral prior.
-        double expected_entropy = 0.0;
+        // Expected IG in bits under neutral prior p0(t)=1/|T|.
+        // p(a) = sum_t p0(t)*P(a|t), p(t|a) ∝ p0(t)*P(a|t)
+        // IG(Q) = H(p0) - sum_a p(a)*H(p(.|a))
+        double expected_posterior_entropy_bits = 0.0;
         double total_answer_mass = 0.0;
         for (std::size_t a = 0; a < inference::kTotalAnswerOptions; ++a) {
             double answer_mass = 0.0;
@@ -301,21 +357,43 @@ InMemoryContentGraph::LikelihoodValidationReport InMemoryContentGraph::validate_
             for (std::size_t t = 0; t < targets.size(); ++t) {
                 posterior[t] = (uniform_prior[t] * answer_rows[a][t]) / answer_mass;
             }
-            expected_entropy += answer_mass * entropy_bits(posterior);
+            expected_posterior_entropy_bits += answer_mass * entropy_bits(posterior);
             total_answer_mass += answer_mass;
         }
         if (total_answer_mass > 0.0) {
-            expected_entropy /= total_answer_mass;
+            expected_posterior_entropy_bits /= total_answer_mass;
         }
-        const auto ig_bits = prior_entropy - expected_entropy;
+
+        const auto ig_bits = prior_entropy_bits - expected_posterior_entropy_bits;
         report.information_gain_bits_by_question[qid] = ig_bits;
-        if (ig_bits < kQuestionMinIgBits) {
-            report.warnings.push_back({qid, "expected information gain is low", ValidationSeverity::Warning});
+        if (ig_bits < params.ig_min_bits) {
+            add_warning(
+                qid,
+                "ig_min_bits",
+                "ig_bits=" + std::to_string(ig_bits),
+                "Question is weak; increase contrast between archetype-consistent answers.",
+                "expected information gain is low"
+            );
+        }
+    }
+
+    if (mode == ValidationMode::Strict && !report.warnings.empty()) {
+        report.ok = false;
+        for (const auto& warning : report.warnings) {
+            report.hard_violations.push_back({
+                warning.question_id,
+                warning.rule_name,
+                warning.message,
+                warning.metric,
+                warning.hint,
+                ValidationSeverity::HardViolation,
+            });
         }
     }
 
     return report;
 }
+
 
 std::vector<GraphNode> InMemoryContentGraph::nearest_targets(const std::string& node_id, std::size_t k) const {
     std::vector<GraphNode> out;

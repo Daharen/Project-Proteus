@@ -2,6 +2,7 @@
 
 #include "proteus/content/graph_contracts.hpp"
 #include "proteus/inference/identity.hpp"
+#include "proteus/inference/likelihood_validation_params.hpp"
 
 #include <array>
 #include <unordered_map>
@@ -15,9 +16,17 @@ public:
         HardViolation,
     };
 
+    enum class ValidationMode {
+        WarnOnly,
+        Strict,
+    };
+
     struct LikelihoodValidationIssue {
         std::string question_id;
+        std::string rule_name;
         std::string message;
+        std::string metric;
+        std::string hint;
         ValidationSeverity severity = ValidationSeverity::Warning;
     };
 
@@ -39,7 +48,11 @@ public:
     void seed_identity_v1_domain();
 
     std::vector<inference::IdentityArchetype> get_identity_archetypes() const;
-    LikelihoodValidationReport validate_likelihood_tables(const std::string& domain) const;
+    LikelihoodValidationReport validate_likelihood_tables(
+        const std::string& domain,
+        ValidationMode mode = ValidationMode::WarnOnly,
+        inference::LikelihoodValidationParams params = {}
+    ) const;
     std::vector<std::string> get_domain_questions(const std::string& domain) const;
 
     std::vector<GraphNode> nearest_targets(const std::string& node_id, std::size_t k) const override;

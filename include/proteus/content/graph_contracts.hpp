@@ -26,8 +26,7 @@ public:
     virtual std::vector<GraphNode> nearest_targets(const std::string& node_id, std::size_t k) const = 0;
     virtual inference::Question get_question(const std::string& question_id) const = 0;
     virtual std::vector<std::string> get_candidate_targets(const std::string& domain) const = 0;
-
-        // Contract for likelihood semantics:
+    // Contract for likelihood semantics:
     // - Questions must have exactly 7 options where index 6 is IDK/Unknown (`inference::kIdkIndex`).
     // - Returns L[t] for each target t in `target_ids`, where L[t] is P(answer=a | target=t, question=Q).
     // - Implementations should guarantee finite values and an epsilon floor (strictly > 0).

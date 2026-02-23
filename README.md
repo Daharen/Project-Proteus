@@ -49,13 +49,50 @@ Canonical semantics for `ContentGraph::get_likelihoods(question_id, answer, targ
 - Questions are fixed to 7 options, with IDK at index `6`.
 - Likelihood tables are normalized **per-target across answers** for each question:
   - `sum_a P(answer=a | target=t, question=Q) = 1`.
-- Values must be finite and strictly positive (epsilon-clamped by authored data + runtime safeguards).
+- Values must be finite and strictly positive.
 
-Validator checks (hard violations vs warnings):
+Centralized defaults (`inference::LikelihoodValidationParams` in `include/proteus/inference/likelihood_validation_params.hpp`):
 
-- **Hard**: wrong vector length, NaN/Inf, non-positive likelihood, per-target normalization failure.
-- **Warnings**: near-epsilon values, weak substantive differentiation ratio, near-duplicate answers, high-impact IDK (KL vs neutral prior), low expected information gain.
-- Validator also reports per-question expected information gain (bits) under a neutral prior for debug visibility.
+- `epsilon = 1e-9`
+- `near_epsilon_ratio = 2.0`
+- `substantive_min_ratio = 2.0`
+- `answer_cosine_dup = 0.995`
+- `idk_uniform_ratio = 1.25`
+- `idk_kl_max_bits = 0.02`
+- `ig_min_bits = 0.02`
+- `normalization_tol = 1e-6`
+
+Validation mode:
+
+- `WarnOnly`: only hard violations fail.
+- `Strict`: warnings are promoted to hard failures.
+- Current usage: tests use `Strict`; CLI demo uses `WarnOnly`.
+
+IDK metric definition (across targets for IDK row `L_idk[t]`):
+
+- Primary: `KL_bits(L_idk || U)` with `U[t] = 1/|T|`, warning if `KL_bits > idk_kl_max_bits`.
+- Secondary: warning if `max(L_idk)/min(L_idk) > idk_uniform_ratio`.
+- Log base is **log2** (bits), matching IG units.
+
+Information gain definition (bits, neutral prior):
+
+- `p0(t) = 1/|T|`
+- `p(a) = sum_t p0(t) * P(a|t)`
+- `p(t|a) ∝ p0(t) * P(a|t)`
+- `IG(Q) = H(p0) - sum_a p(a) * H(p(.|a))`, with `H` computed using `log2`.
+
+Actionable validator output includes:
+
+- `question_id`, `rule_name`, `severity`, `metric` summary, and `hint`.
+
+Example output:
+
+```text
+WARN [ig_min_bits] identity_q09: expected information gain is low (ig_bits=0.0134)
+  hint: Question is weak; increase contrast between archetype-consistent answers.
+HARD [per_target_normalization] identity_q12: per-target normalization violated (sum=1.0042)
+  hint: Normalize each target column so sum across answers equals 1.
+```
 
 Authoring recipe (v1):
 
