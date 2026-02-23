@@ -2,9 +2,16 @@
 
 #include "proteus/playable/feature_extractor.hpp"
 
+#include <openssl/sha.h>
+
+#include <array>
 #include <cmath>
 #include <functional>
+#include <iomanip>
+#include <limits>
 #include <random>
+#include <sstream>
+#include <string_view>
 #include <stdexcept>
 
 namespace proteus::playable {
@@ -33,6 +40,39 @@ double dot(const std::vector<double>& a, const std::vector<double>& b) {
 std::int64_t make_seed(const std::string& policy, const std::string& session_id, const std::string& prompt_hash) {
     std::hash<std::string> hasher;
     return static_cast<std::int64_t>(hasher(policy + "|" + session_id + "|" + prompt_hash));
+}
+
+std::string sha256_hex(std::string_view value) {
+    std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
+    SHA256(reinterpret_cast<const unsigned char*>(value.data()), value.size(), digest.data());
+
+    std::ostringstream out;
+    for (unsigned char byte : digest) {
+        out << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(byte);
+    }
+    return out.str();
+}
+
+std::string stable_identity_axis_material(const bandits::PlayerContext& player_context) {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(2);
+    for (float axis : player_context.identity_axes) {
+        const int quantized = static_cast<int>(std::round(axis * 100.0F));
+        out << quantized << ',';
+    }
+    return out.str();
+}
+
+std::string make_topology_seed(const std::string& stable_player_id, const bandits::PlayerContext& player_context, const std::string& domain) {
+    const std::string seed_material = stable_player_id + "|" + stable_identity_axis_material(player_context) + "|" + domain;
+    return sha256_hex(seed_material);
+}
+
+double bounded_noise(const std::string& topology_seed, const std::string& mechanic_id) {
+    const std::string noise_hash = sha256_hex(topology_seed + "|" + mechanic_id);
+    const std::uint64_t raw = std::stoull(noise_hash.substr(0, 16), nullptr, 16);
+    const double normalized = static_cast<double>(raw) / static_cast<double>(std::numeric_limits<std::uint64_t>::max());
+    return (normalized * 2.0 - 1.0) * 0.08;
 }
 
 }  // namespace
@@ -110,6 +150,7 @@ SelectionDecision BanditSelector::select(
     }
 
     const auto context_features = extract_context_features(player_context, domain);
+    const std::string topology_seed = make_topology_seed(session_id, player_context, domain);
     const auto seed = make_seed(policy_version_, session_id, prompt_hash);
     std::mt19937_64 rng(static_cast<std::mt19937_64::result_type>(seed));
     std::uniform_real_distribution<double> u01(0.0, 1.0);
@@ -118,10 +159,16 @@ SelectionDecision BanditSelector::select(
     const bool explore = u01(rng) < epsilon_;
     std::size_t selected_idx = 0;
     std::vector<double> selected_x;
+    double selected_base_score = 0.0;
+    double selected_modifier = 0.0;
+    double selected_final_score = 0.0;
 
     if (explore) {
         selected_idx = index_pick(rng);
         selected_x = concat_features(context_features, extract_arm_features(candidates[selected_idx]));
+        selected_base_score = sigmoid(dot(weights_, selected_x));
+        selected_modifier = bounded_noise(topology_seed, "bandit_scoring_weight:" + candidates[selected_idx].proposal_id);
+        selected_final_score = selected_base_score * (1.0 + selected_modifier);
     } else {
         double best_score = -1e9;
         for (std::size_t i = 0; i < candidates.size(); ++i) {
@@ -129,11 +176,16 @@ SelectionDecision BanditSelector::select(
             if (weights_.size() < x.size()) {
                 weights_.resize(x.size(), 0.0);
             }
-            const double score = sigmoid(dot(weights_, x));
-            if (score > best_score) {
-                best_score = score;
+            const double base_score = sigmoid(dot(weights_, x));
+            const double modifier = bounded_noise(topology_seed, "bandit_scoring_weight:" + candidates[i].proposal_id);
+            const double final_score = base_score * (1.0 + modifier);
+            if (final_score > best_score) {
+                best_score = final_score;
                 selected_idx = i;
                 selected_x = x;
+                selected_base_score = base_score;
+                selected_modifier = modifier;
+                selected_final_score = final_score;
             }
         }
     }
@@ -144,6 +196,10 @@ SelectionDecision BanditSelector::select(
         .explored = explore,
         .epsilon_used = epsilon_,
         .decision_features = selected_x,
+        .topology_modifier = selected_modifier,
+        .base_score = selected_base_score,
+        .final_score = selected_final_score,
+        .topology_seed = topology_seed,
     };
 }
 

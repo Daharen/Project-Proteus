@@ -16,6 +16,10 @@ struct SelectionDecision {
     bool explored = false;
     double epsilon_used = 0.0;
     std::vector<double> decision_features;
+    double topology_modifier = 0.0;
+    double base_score = 0.0;
+    double final_score = 0.0;
+    std::string topology_seed;
 };
 
 class ProposalSelector {

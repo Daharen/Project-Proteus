@@ -9,6 +9,7 @@
 
 #include "httplib.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -77,6 +78,19 @@ bandits::PlayerContext parse_player_context(const nlohmann::json& body) {
     }
     if (pc.contains("questions_answered") && pc.at("questions_answered").is_number()) {
         ctx.questions_answered = static_cast<std::uint32_t>(pc.at("questions_answered").get<double>());
+    }
+    if (pc.contains("identity_axes") && pc.at("identity_axes").is_array()) {
+        const auto& axes = pc.at("identity_axes");
+        std::size_t i = 0;
+        for (const auto& axis : axes) {
+            if (i >= ctx.identity_axes.size()) {
+                break;
+            }
+            if (axis.is_number()) {
+                ctx.identity_axes[i] = static_cast<float>(axis.get<double>());
+            }
+            ++i;
+        }
     }
     return ctx;
 }
@@ -235,6 +249,8 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
                 {"selection_seed", std::to_string(result.decision.selection_seed)},
                 {"selection_seed_hex", "0x" + ([](std::int64_t v){ std::ostringstream o; o << std::hex << static_cast<unsigned long long>(v); return o.str(); })(result.decision.selection_seed)},
                 {"decision_features", features_to_json(result.decision.decision_features)},
+                {"topology_seed", result.decision.topology_seed},
+                {"topology_adjustments", nlohmann::json{{"bandit_scoring_weight", nlohmann::json{{"base", result.decision.base_score}, {"modifier", result.decision.topology_modifier}, {"final", result.decision.final_score}}}}},
             }},
             {"proposal", result.proposal},
             {"candidate_count", static_cast<double>(list_prompt_candidate_ids(db, result.prompt_hash).size())},
