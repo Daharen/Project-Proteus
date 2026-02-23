@@ -1,0 +1,58 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Proteus Local Playtest</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <h1>Proteus Playtest</h1>
+  <label>Domain <input id="domain" value="rpg" /></label>
+  <label>Session <input id="session" /></label>
+  <button id="genSession">Generate</button>
+
+  <label style="display:block; margin-top:8px;">
+    Player ID
+    <input id="playerId" type="text" value="player_A" style="width: 360px;" />
+  </label>
+
+  <label style="display:block; margin-top:6px;">
+    <input id="rememberPlayerId" type="checkbox" checked />
+    Remember Player ID
+  </label>
+
+  <button id="refreshPlayerBtn" type="button" style="margin-top:8px;">Refresh Player Panel</button>
+  <button id="recentPlayerBtn" type="button" style="margin-top:8px;">Recent</button>
+
+  <br/>
+  <textarea id="prompt" rows="4" cols="70" placeholder="help me find a quest"></textarea>
+  <br/>
+  <button id="queryBtn">Query</button>
+  <div id="status"></div>
+
+  <h3>Proposal text</h3>
+  <pre id="proposalText"></pre>
+
+  <h3>Debug</h3>
+  <pre id="debug"></pre>
+
+  <h3>Proposal JSON</h3>
+  <pre id="proposalJson"></pre>
+
+  <h3>Reward</h3>
+  <button id="thumbUp">👍</button>
+  <button id="thumbDown">👎</button>
+  <button class="star" data-score="1">★1</button>
+  <button class="star" data-score="2">★2</button>
+  <button class="star" data-score="3">★3</button>
+  <button class="star" data-score="4">★4</button>
+  <button class="star" data-score="5">★5</button>
+
+  <div style="margin-top:14px; padding:10px; border:1px solid #444;">
+    <div style="font-weight:bold; margin-bottom:6px;">Player Panel</div>
+    <pre id="playerPanel" style="white-space:pre-wrap; margin:0;">(no data yet)</pre>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
