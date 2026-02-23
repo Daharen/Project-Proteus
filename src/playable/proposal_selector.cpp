@@ -1,17 +1,12 @@
 #include "proteus/playable/proposal_selector.hpp"
 
 #include "proteus/playable/feature_extractor.hpp"
+#include "proteus/playable/governor.hpp"
+#include "proteus/playable/topology.hpp"
 
-#include <openssl/sha.h>
-
-#include <array>
 #include <cmath>
 #include <functional>
-#include <iomanip>
-#include <limits>
 #include <random>
-#include <sstream>
-#include <string_view>
 #include <stdexcept>
 
 namespace proteus::playable {
@@ -40,39 +35,6 @@ double dot(const std::vector<double>& a, const std::vector<double>& b) {
 std::int64_t make_seed(const std::string& policy, const std::string& session_id, const std::string& prompt_hash) {
     std::hash<std::string> hasher;
     return static_cast<std::int64_t>(hasher(policy + "|" + session_id + "|" + prompt_hash));
-}
-
-std::string sha256_hex(std::string_view value) {
-    std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
-    SHA256(reinterpret_cast<const unsigned char*>(value.data()), value.size(), digest.data());
-
-    std::ostringstream out;
-    for (unsigned char byte : digest) {
-        out << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(byte);
-    }
-    return out.str();
-}
-
-std::string stable_identity_axis_material(const bandits::PlayerContext& player_context) {
-    std::ostringstream out;
-    out << std::fixed << std::setprecision(2);
-    for (float axis : player_context.identity_axes) {
-        const int quantized = static_cast<int>(std::round(axis * 100.0F));
-        out << quantized << ',';
-    }
-    return out.str();
-}
-
-std::string make_topology_seed(const std::string& stable_player_id, const bandits::PlayerContext& player_context, const std::string& domain) {
-    const std::string seed_material = stable_player_id + "|" + stable_identity_axis_material(player_context) + "|" + domain;
-    return sha256_hex(seed_material);
-}
-
-double bounded_noise(const std::string& topology_seed, const std::string& mechanic_id) {
-    const std::string noise_hash = sha256_hex(topology_seed + "|" + mechanic_id);
-    const std::uint64_t raw = std::stoull(noise_hash.substr(0, 16), nullptr, 16);
-    const double normalized = static_cast<double>(raw) / static_cast<double>(std::numeric_limits<std::uint64_t>::max());
-    return (normalized * 2.0 - 1.0) * 0.08;
 }
 
 }  // namespace
@@ -150,7 +112,9 @@ SelectionDecision BanditSelector::select(
     }
 
     const auto context_features = extract_context_features(player_context, domain);
-    const std::string topology_seed = make_topology_seed(session_id, player_context, domain);
+    const std::string stable_player_id = player_context.stable_player_id.empty() ? session_id : player_context.stable_player_id;
+    const std::string identity_axes_summary = quantized_identity_axis_material(player_context.identity_axes);
+    const std::string topology_seed = compute_topology_seed(stable_player_id, player_context.identity_axes, domain);
     const auto seed = make_seed(policy_version_, session_id, prompt_hash);
     std::mt19937_64 rng(static_cast<std::mt19937_64::result_type>(seed));
     std::uniform_real_distribution<double> u01(0.0, 1.0);
@@ -162,32 +126,58 @@ SelectionDecision BanditSelector::select(
     double selected_base_score = 0.0;
     double selected_modifier = 0.0;
     double selected_final_score = 0.0;
+    double selected_governor_factor = 1.0;
+    std::string selected_governor_reason = "noop";
+    std::vector<CandidateScoreDebug> candidate_scores;
+    candidate_scores.reserve(candidates.size());
+
+    double best_score = -1e9;
+    for (std::size_t i = 0; i < candidates.size(); ++i) {
+        const auto x = concat_features(context_features, extract_arm_features(candidates[i]));
+        if (weights_.size() < x.size()) {
+            weights_.resize(x.size(), 0.0);
+        }
+        const double base_score = sigmoid(dot(weights_, x));
+        const double modifier = topology_modifier(topology_seed, "bandit_scoring_weight:" + candidates[i].proposal_id);
+        const double topology_score = base_score * (1.0 + modifier);
+        const auto governor = compute_governor_adjustments(GovernorInputs{
+            .domain = domain,
+            .prompt_hash = prompt_hash,
+            .player_id = stable_player_id,
+            .topology_seed = topology_seed,
+            .identity_axes_summary = identity_axes_summary,
+            .history_interactions = 0,
+        });
+        const double final_score = topology_score * governor.dampening_factor;
+        candidate_scores.push_back(CandidateScoreDebug{
+            .proposal_id = candidates[i].proposal_id,
+            .base_score = base_score,
+            .modifier = modifier,
+            .topology_score = topology_score,
+            .governor_factor = governor.dampening_factor,
+            .final_score = final_score,
+        });
+
+        if (!explore && final_score > best_score) {
+            best_score = final_score;
+            selected_idx = i;
+            selected_x = x;
+            selected_base_score = base_score;
+            selected_modifier = modifier;
+            selected_final_score = final_score;
+            selected_governor_factor = governor.dampening_factor;
+            selected_governor_reason = governor.reason;
+        }
+    }
 
     if (explore) {
         selected_idx = index_pick(rng);
         selected_x = concat_features(context_features, extract_arm_features(candidates[selected_idx]));
-        selected_base_score = sigmoid(dot(weights_, selected_x));
-        selected_modifier = bounded_noise(topology_seed, "bandit_scoring_weight:" + candidates[selected_idx].proposal_id);
-        selected_final_score = selected_base_score * (1.0 + selected_modifier);
-    } else {
-        double best_score = -1e9;
-        for (std::size_t i = 0; i < candidates.size(); ++i) {
-            const auto x = concat_features(context_features, extract_arm_features(candidates[i]));
-            if (weights_.size() < x.size()) {
-                weights_.resize(x.size(), 0.0);
-            }
-            const double base_score = sigmoid(dot(weights_, x));
-            const double modifier = bounded_noise(topology_seed, "bandit_scoring_weight:" + candidates[i].proposal_id);
-            const double final_score = base_score * (1.0 + modifier);
-            if (final_score > best_score) {
-                best_score = final_score;
-                selected_idx = i;
-                selected_x = x;
-                selected_base_score = base_score;
-                selected_modifier = modifier;
-                selected_final_score = final_score;
-            }
-        }
+        selected_base_score = candidate_scores[selected_idx].base_score;
+        selected_modifier = candidate_scores[selected_idx].modifier;
+        selected_final_score = candidate_scores[selected_idx].final_score;
+        selected_governor_factor = candidate_scores[selected_idx].governor_factor;
+        selected_governor_reason = "noop";
     }
 
     return SelectionDecision{
@@ -199,7 +189,10 @@ SelectionDecision BanditSelector::select(
         .topology_modifier = selected_modifier,
         .base_score = selected_base_score,
         .final_score = selected_final_score,
+        .governor_factor = selected_governor_factor,
+        .governor_reason = selected_governor_reason,
         .topology_seed = topology_seed,
+        .candidate_scores = candidate_scores,
     };
 }
 

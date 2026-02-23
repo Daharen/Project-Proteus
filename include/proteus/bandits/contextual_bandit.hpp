@@ -20,6 +20,9 @@ struct PlayerContext {
 
     std::uint64_t session_id = 0;
     std::uint32_t niche_id = 0;
+
+    std::string stable_player_id;
+
 };
 
 struct ArmSelection {

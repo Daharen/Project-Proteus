@@ -11,9 +11,11 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <random>
 #include <sstream>
 #include <stdexcept>
@@ -79,6 +81,9 @@ bandits::PlayerContext parse_player_context(const nlohmann::json& body) {
     if (pc.contains("questions_answered") && pc.at("questions_answered").is_number()) {
         ctx.questions_answered = static_cast<std::uint32_t>(pc.at("questions_answered").get<double>());
     }
+    if (pc.contains("stable_player_id") && pc.at("stable_player_id").is_string()) {
+        ctx.stable_player_id = pc.at("stable_player_id").get<std::string>();
+    }
     if (pc.contains("identity_axes") && pc.at("identity_axes").is_array()) {
         const auto& axes = pc.at("identity_axes");
         std::size_t i = 0;
@@ -104,6 +109,18 @@ bool json_bool(const nlohmann::json& obj, const char* key, bool fallback) {
     } catch (const std::exception&) {
         return fallback;
     }
+}
+
+bool almost_equal(double a, double b, double tol = 1e-6) {
+    return std::abs(a - b) <= tol;
+}
+
+nlohmann::json candidate_scores_to_json(const std::vector<CandidateScoreDebug>& scores) {
+    nlohmann::json arr = nlohmann::json::array({});
+    for (const auto& score : scores) {
+        arr.push_back(nlohmann::json{{"proposal_id", score.proposal_id}, {"base", score.base_score}, {"modifier", score.modifier}, {"topology", score.topology_score}, {"governor_factor", score.governor_factor}, {"final", score.final_score}});
+    }
+    return arr;
 }
 
 nlohmann::json features_to_json(const std::vector<double>& v) {
@@ -250,7 +267,10 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
                 {"selection_seed_hex", "0x" + ([](std::int64_t v){ std::ostringstream o; o << std::hex << static_cast<unsigned long long>(v); return o.str(); })(result.decision.selection_seed)},
                 {"decision_features", features_to_json(result.decision.decision_features)},
                 {"topology_seed", result.decision.topology_seed},
-                {"topology_adjustments", nlohmann::json{{"bandit_scoring_weight", nlohmann::json{{"base", result.decision.base_score}, {"modifier", result.decision.topology_modifier}, {"final", result.decision.final_score}}}}},
+                {"topology_adjustments", nlohmann::json{{"bandit_scoring_weight", nlohmann::json{{"base", result.decision.base_score}, {"modifier", result.decision.topology_modifier}, {"final", result.decision.base_score * (1.0 + result.decision.topology_modifier)}}}}},
+                {"governor", nlohmann::json{{"factor", result.decision.governor_factor}, {"reason", result.decision.governor_reason}}},
+                {"final_score", result.decision.final_score},
+                {"candidate_scores", candidate_scores_to_json(result.decision.candidate_scores)},
             }},
             {"proposal", result.proposal},
             {"candidate_count", static_cast<double>(list_prompt_candidate_ids(db, result.prompt_hash).size())},
@@ -365,6 +385,94 @@ int run_self_test(const HttpServerConfig& config) {
     if (stats.json.at("stats").at("shown_count").get<double>() < 1.0 || stats.json.at("stats").at("reward_count").get<double>() < 1.0) {
         throw std::runtime_error("self_test stats assertions failed");
     }
+
+    const nlohmann::json player_a_ctx = {
+        {"identity_axes", nlohmann::json::array({0.80, -0.55, 0.65, 0.25, -0.20, 0.40, -0.35, 0.15})},
+        {"stable_player_id", "player-A"}
+    };
+    const nlohmann::json player_b_ctx = {
+        {"identity_axes", nlohmann::json::array({-0.70, 0.45, -0.30, 0.75, 0.55, -0.40, 0.20, -0.65})},
+        {"stable_player_id", "player-B"}
+    };
+
+    auto topo_a = client_request(port, "POST", "/query", nlohmann::json{
+        {"domain", "rpg"},
+        {"prompt", "topology divergence proof prompt"},
+        {"session_id", "topology-proof-session"},
+        {"player_context", player_a_ctx}
+    });
+    auto topo_b = client_request(port, "POST", "/query", nlohmann::json{
+        {"domain", "rpg"},
+        {"prompt", "topology divergence proof prompt"},
+        {"session_id", "topology-proof-session"},
+        {"player_context", player_b_ctx}
+    });
+
+    if (topo_a.status != 200 || topo_b.status != 200 || !json_bool(topo_a.json, "ok", false) || !json_bool(topo_b.json, "ok", false)) {
+        throw std::runtime_error("self_test topology proof query failed");
+    }
+
+    const auto& dec_a = topo_a.json.at("decision");
+    const auto& dec_b = topo_b.json.at("decision");
+    const std::string seed_a = dec_a.at("topology_seed").get<std::string>();
+    const std::string seed_b = dec_b.at("topology_seed").get<std::string>();
+    const auto& adj_a = dec_a.at("topology_adjustments").at("bandit_scoring_weight");
+    const auto& adj_b = dec_b.at("topology_adjustments").at("bandit_scoring_weight");
+
+    const double base_a = adj_a.at("base").get<double>();
+    const double mod_a = adj_a.at("modifier").get<double>();
+    const double final_a = adj_a.at("final").get<double>();
+    const double base_b = adj_b.at("base").get<double>();
+    const double mod_b = adj_b.at("modifier").get<double>();
+    const double final_b = adj_b.at("final").get<double>();
+
+    if (seed_a == seed_b) {
+        throw std::runtime_error("self_test topology proof failed: identical topology seeds");
+    }
+    if (mod_a == mod_b) {
+        throw std::runtime_error("self_test topology proof failed: identical modifiers");
+    }
+    if (std::abs(mod_a) > 0.08 || std::abs(mod_b) > 0.08) {
+        throw std::runtime_error("self_test topology proof failed: modifier out of bounds");
+    }
+    if (!almost_equal(final_a, base_a * (1.0 + mod_a)) || !almost_equal(final_b, base_b * (1.0 + mod_b))) {
+        throw std::runtime_error("self_test topology proof failed: final score equation mismatch");
+    }
+
+    bool divergence_observed = false;
+    const auto& scores_a = dec_a.at("candidate_scores");
+    const auto& scores_b = dec_b.at("candidate_scores");
+    for (const auto& ca : scores_a) {
+        const auto proposal = ca.at("proposal_id").get<std::string>();
+        for (const auto& cb : scores_b) {
+            if (cb.at("proposal_id").get<std::string>() != proposal) {
+                continue;
+            }
+            if (!almost_equal(ca.at("final").get<double>(), cb.at("final").get<double>())) {
+                divergence_observed = true;
+                break;
+            }
+        }
+        if (divergence_observed) {
+            break;
+        }
+    }
+    if (!divergence_observed) {
+        throw std::runtime_error("self_test topology proof failed: no per-candidate divergence");
+    }
+
+    std::cout << "[topology_proof] A seed=" << seed_a
+              << " modifier=" << mod_a
+              << " base=" << base_a
+              << " final=" << final_a
+              << " proposal=" << dec_a.at("proposal_id").get<std::string>()
+              << "\n";
+    std::cout << "[topology_proof] B seed=" << seed_b
+              << " modifier=" << mod_b
+              << " base=" << base_b
+              << " final=" << final_b
+              << " proposal=" << dec_b.at("proposal_id").get<std::string>()
+              << "\n";
 
     return 0;
 }

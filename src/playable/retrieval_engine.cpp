@@ -47,6 +47,7 @@ std::string serialize_player_context(const bandits::PlayerContext& context) {
     player["idk_rate"] = context.idk_rate;
     player["session_id"] = static_cast<double>(context.session_id);
     player["niche_id"] = static_cast<double>(context.niche_id);
+    player["stable_player_id"] = context.stable_player_id;
     return player.dump();
 }
 
