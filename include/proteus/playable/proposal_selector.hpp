@@ -10,12 +10,28 @@
 
 namespace proteus::playable {
 
+struct CandidateScoreDebug {
+    std::string proposal_id;
+    double base_score = 0.0;
+    double modifier = 0.0;
+    double topology_score = 0.0;
+    double governor_factor = 1.0;
+    double final_score = 0.0;
+};
+
 struct SelectionDecision {
     std::string proposal_id;
     std::int64_t selection_seed = 0;
     bool explored = false;
     double epsilon_used = 0.0;
     std::vector<double> decision_features;
+    double topology_modifier = 0.0;
+    double base_score = 0.0;
+    double final_score = 0.0;
+    double governor_factor = 1.0;
+    std::string governor_reason = "noop";
+    std::string topology_seed;
+    std::vector<CandidateScoreDebug> candidate_scores;
 };
 
 class ProposalSelector {

@@ -4,10 +4,12 @@
 #include "proteus/playable/prompt_cache.hpp"
 #include "proteus/playable/proposal_schema.hpp"
 #include "proteus/playable/retrieval_engine.hpp"
+#include "proteus/playable/topology.hpp"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <filesystem>
 
 namespace {
@@ -235,4 +237,37 @@ TEST(PlayableCoreTest, CandidatePruningRemovesWeakArmsWhenAboveMin) {
     EXPECT_EQ(std::find(ids.begin(), ids.end(), extra_id) == ids.end(), true);
 
     std::filesystem::remove(db_path);
+}
+
+
+TEST(PlayableCoreTest, TopologyNoiseAndModifierBoundsAreStable) {
+    const std::array<std::pair<std::string, std::string>, 4> cases = {{
+        {"seed-a", "mechanic-1"},
+        {"seed-a", "mechanic-2"},
+        {"seed-b", "mechanic-1"},
+        {"seed-c", "bandit_scoring_weight:arm-x"}
+    }};
+
+    for (const auto& [seed, mechanic] : cases) {
+        const double unit = proteus::playable::topology_noise_unit(seed, mechanic);
+        const double modifier = proteus::playable::topology_modifier(seed, mechanic);
+        EXPECT_EQ(unit >= -1.0, true);
+        EXPECT_EQ(unit <= 1.0, true);
+        EXPECT_EQ(modifier >= -proteus::playable::kTopologyModifierBound, true);
+        EXPECT_EQ(modifier <= proteus::playable::kTopologyModifierBound, true);
+    }
+}
+
+TEST(PlayableCoreTest, TopologySeedQuantizationAndCanonicalMaterialAreStable) {
+    const proteus::inference::AxisVector axes = {0.1234F, -0.5678F, 0.0F, 1.0F, -1.0F, 0.3333F, -0.9999F, 0.004F};
+    const std::string material = proteus::playable::quantized_identity_axis_material(axes);
+    EXPECT_EQ(material, "12,-57,0,100,-100,33,-100,0,");
+
+    const std::string seed1 = proteus::playable::compute_topology_seed("player-1", axes, "rpg");
+    const std::string seed2 = proteus::playable::compute_topology_seed("player-1", axes, "rpg");
+    EXPECT_EQ(seed1, seed2);
+
+    const proteus::inference::AxisVector reordered = {-0.5678F, 0.1234F, 0.0F, 1.0F, -1.0F, 0.3333F, -0.9999F, 0.004F};
+    const std::string seed_reordered = proteus::playable::compute_topology_seed("player-1", reordered, "rpg");
+    EXPECT_EQ(seed1 != seed_reordered, true);
 }

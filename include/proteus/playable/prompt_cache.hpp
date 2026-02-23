@@ -42,6 +42,10 @@ struct InteractionLogRecord {
     int reward_applied = 0;
     std::int64_t selection_seed = 0;
     std::string decision_features_json;
+    std::string stable_player_id;
+    double base_score = 0.0;
+    double topology_modifier = 0.0;
+    double final_score = 0.0;
     std::int64_t timestamp = 0;
 };
 
