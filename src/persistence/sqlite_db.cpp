@@ -144,6 +144,7 @@ void SqliteDb::open(const std::string& path) {
     if (rc != SQLITE_OK) {
         throw_sqlite_error(db_, "sqlite open failed");
     }
+    exec("PRAGMA foreign_keys = ON;");
 }
 
 void SqliteDb::exec(const std::string& sql) {
