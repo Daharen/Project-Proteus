@@ -46,29 +46,36 @@ std::string serialize_player_context(const bandits::PlayerContext& context) {
     return player.dump();
 }
 
-std::string serialize_features(const std::vector<double>& features) {
+std::string serialize_features(const std::vector<double>& features, const std::string& feature_version) {
     nlohmann::json arr = nlohmann::json::array({});
     for (double v : features) {
         arr.push_back(v);
     }
-    return arr.dump();
+    nlohmann::json root;
+    root["feature_version"] = feature_version;
+    root["features"] = arr;
+    return root.dump();
 }
 
-std::vector<double> parse_features_json(const std::string& text) {
-    std::vector<double> out;
+bool parse_features_json(const std::string& text, std::string& feature_version, std::vector<double>& out) {
+    out.clear();
     if (text.empty()) {
-        return out;
+        return false;
     }
-    const auto arr = nlohmann::json::parse(text);
-    if (!arr.is_array()) {
-        return out;
+    const auto root = nlohmann::json::parse(text);
+    if (!root.is_object() || !root.contains("feature_version") || !root.contains("features")) {
+        return false;
     }
-    for (const auto& v : arr) {
+    if (!root.at("feature_version").is_string() || !root.at("features").is_array()) {
+        return false;
+    }
+    feature_version = root.at("feature_version").get<std::string>();
+    for (const auto& v : root.at("features")) {
         if (v.is_number()) {
             out.push_back(v.get<double>());
         }
     }
-    return out;
+    return true;
 }
 
 std::vector<Proposal> generate_candidates(
@@ -222,10 +229,12 @@ RetrievalResult run_retrieval_detailed(
             .reward_signal = 0.0,
             .reward_is_null = true,
             .selection_seed = decision.selection_seed,
-            .decision_features_json = serialize_features(decision.decision_features),
+            .decision_features_json = serialize_features(decision.decision_features, selector.feature_version()),
             .timestamp = now,
         }
     );
+
+    update_proposal_stats_on_show(db, selected.proposal_id, now);
 
     return RetrievalResult{
         .session_id = request.session_id,
@@ -250,12 +259,23 @@ void log_reward(
     const std::string& proposal_id,
     double reward_value
 ) {
-    log_reward_interaction(db, session_id, proposal_id, reward_value);
+    const bool applied = log_reward_interaction_once(db, session_id, proposal_id, reward_value);
+    if (!applied) {
+        return;
+    }
+    update_proposal_stats_on_reward(db, proposal_id, reward_value);
     const auto interaction = latest_interaction_for_session_and_arm(db, session_id, proposal_id);
     if (!interaction.has_value()) {
         return;
     }
-    const auto features = parse_features_json(interaction->decision_features_json);
+    std::string feature_version;
+    std::vector<double> features;
+    if (!parse_features_json(interaction->decision_features_json, feature_version, features)) {
+        return;
+    }
+    if (feature_version != selector.feature_version()) {
+        return;
+    }
     selector.update_with_reward(features, reward_value);
 }
 

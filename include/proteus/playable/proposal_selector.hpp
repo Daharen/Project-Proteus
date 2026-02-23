@@ -30,6 +30,7 @@ public:
     ) = 0;
 
     virtual void update_with_reward(const std::vector<double>& decision_features, double reward) = 0;
+    virtual std::string feature_version() const = 0;
 };
 
 class BanditSelector final : public ProposalSelector {
@@ -45,6 +46,7 @@ public:
     ) override;
 
     void update_with_reward(const std::vector<double>& decision_features, double reward) override;
+    std::string feature_version() const override;
 
 private:
     persistence::SqliteDb& db_;

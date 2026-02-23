@@ -124,6 +124,38 @@ TEST(PlayableCoreTest, RewardUpdateLearnsAndPersistsState) {
     std::filesystem::remove(db_path);
 }
 
+
+TEST(PlayableCoreTest, RewardDedupAppliesOnlyOnceAndTracksStats) {
+    const std::filesystem::path db_path = std::filesystem::temp_directory_path() / "proteus_test_reward_dedup.db";
+    std::filesystem::remove(db_path);
+
+    proteus::persistence::SqliteDb db;
+    db.open(db_path.string());
+    proteus::persistence::ensure_schema(db);
+
+    upsert_bandit_state(db, "dedup", 0.0, 0.05, std::vector<double>(18, 0.0));
+    proteus::playable::BanditSelector selector(db, "dedup");
+
+    const proteus::playable::RetrievalRequest req{.domain = "rpg", .raw_prompt = "delta", .session_id = "s-dedup", .policy_version = "dedup"};
+    const auto first = proteus::playable::run_retrieval(db, req, selector);
+    const auto proposal_id = first.at("proposal_id").get<std::string>();
+
+    const bool first_apply = proteus::playable::log_reward_interaction_once(db, "s-dedup", proposal_id, 1.0);
+    const bool second_apply = proteus::playable::log_reward_interaction_once(db, "s-dedup", proposal_id, 1.0);
+    EXPECT_EQ(first_apply, true);
+    EXPECT_EQ(second_apply, false);
+
+    proteus::playable::update_proposal_stats_on_reward(db, proposal_id, 1.0);
+    auto stmt = db.prepare("SELECT shown_count, reward_sum, reward_count FROM proposal_stats WHERE proposal_id = ?1;");
+    stmt.bind_text(1, proposal_id);
+    EXPECT_EQ(stmt.step(), true);
+    EXPECT_GT(stmt.column_int64(0), 0);
+    EXPECT_GT(stmt.column_double(1), 0.9);
+    EXPECT_EQ(stmt.column_int64(2), 1);
+
+    std::filesystem::remove(db_path);
+}
+
 TEST(PlayableCoreTest, SchemaValidationRejectsMalformedProposal) {
     nlohmann::json invalid = {
         {"proposal_id", "bad"},

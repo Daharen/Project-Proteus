@@ -133,8 +133,8 @@ Proposal load_proposal(persistence::SqliteDb& db, const std::string& proposal_id
 void insert_interaction_log(persistence::SqliteDb& db, const InteractionLogRecord& record) {
     auto stmt = db.prepare(
         "INSERT INTO interaction_log("
-        "session_id, prompt_hash, player_context_json, chosen_arm, novelty_flag, reward_signal, selection_seed, decision_features_json, timestamp"
-        ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9);"
+        "session_id, prompt_hash, player_context_json, chosen_arm, novelty_flag, reward_signal, reward_applied, selection_seed, decision_features_json, timestamp"
+        ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10);"
     );
     stmt.bind_text(1, record.session_id);
     stmt.bind_text(2, record.prompt_hash);
@@ -146,23 +146,47 @@ void insert_interaction_log(persistence::SqliteDb& db, const InteractionLogRecor
     } else {
         stmt.bind_double(6, record.reward_signal);
     }
-    stmt.bind_int64(7, record.selection_seed);
-    stmt.bind_text(8, record.decision_features_json);
-    stmt.bind_int64(9, record.timestamp);
+    stmt.bind_int64(7, record.reward_applied);
+    stmt.bind_int64(8, record.selection_seed);
+    stmt.bind_text(9, record.decision_features_json);
+    stmt.bind_int64(10, record.timestamp);
     stmt.step();
 }
 
-void log_reward_interaction(persistence::SqliteDb& db, const std::string& session_id, const std::string& proposal_id, double reward_value) {
+bool log_reward_interaction_once(persistence::SqliteDb& db, const std::string& session_id, const std::string& proposal_id, double reward_value) {
     auto stmt = db.prepare(
         "UPDATE interaction_log "
-        "SET reward_signal = ?1 "
+        "SET reward_signal = ?1, reward_applied = 1 "
         "WHERE id = ("
-        "SELECT id FROM interaction_log WHERE session_id = ?2 AND chosen_arm = ?3 ORDER BY id DESC LIMIT 1"
+        "SELECT id FROM interaction_log WHERE session_id = ?2 AND chosen_arm = ?3 AND reward_applied = 0 ORDER BY id DESC LIMIT 1"
         ");"
     );
     stmt.bind_double(1, reward_value);
     stmt.bind_text(2, session_id);
     stmt.bind_text(3, proposal_id);
+    stmt.step();
+    return sqlite3_changes(db.native_handle()) > 0;
+}
+
+void update_proposal_stats_on_show(persistence::SqliteDb& db, const std::string& proposal_id, std::int64_t timestamp) {
+    auto stmt = db.prepare(
+        "INSERT INTO proposal_stats(proposal_id, shown_count, reward_sum, reward_count, last_shown_at) "
+        "VALUES(?1, 1, 0.0, 0, ?2) "
+        "ON CONFLICT(proposal_id) DO UPDATE SET shown_count = shown_count + 1, last_shown_at = excluded.last_shown_at;"
+    );
+    stmt.bind_text(1, proposal_id);
+    stmt.bind_int64(2, timestamp);
+    stmt.step();
+}
+
+void update_proposal_stats_on_reward(persistence::SqliteDb& db, const std::string& proposal_id, double reward_value) {
+    auto stmt = db.prepare(
+        "INSERT INTO proposal_stats(proposal_id, shown_count, reward_sum, reward_count, last_shown_at) "
+        "VALUES(?1, 0, ?2, 1, NULL) "
+        "ON CONFLICT(proposal_id) DO UPDATE SET reward_sum = reward_sum + excluded.reward_sum, reward_count = reward_count + 1;"
+    );
+    stmt.bind_text(1, proposal_id);
+    stmt.bind_double(2, reward_value);
     stmt.step();
 }
 
@@ -179,7 +203,7 @@ std::optional<InteractionLogRecord> latest_interaction_for_session_and_arm(
     const std::string& proposal_id
 ) {
     auto stmt = db.prepare(
-        "SELECT id, session_id, prompt_hash, player_context_json, chosen_arm, novelty_flag, reward_signal, selection_seed, decision_features_json, timestamp "
+        "SELECT id, session_id, prompt_hash, player_context_json, chosen_arm, novelty_flag, reward_signal, reward_applied, selection_seed, decision_features_json, timestamp "
         "FROM interaction_log WHERE session_id = ?1 AND chosen_arm = ?2 ORDER BY id DESC LIMIT 1;"
     );
     stmt.bind_text(1, session_id);
@@ -197,9 +221,10 @@ std::optional<InteractionLogRecord> latest_interaction_for_session_and_arm(
     out.novelty_flag = static_cast<int>(stmt.column_int64(5));
     out.reward_is_null = stmt.column_is_null(6);
     out.reward_signal = out.reward_is_null ? 0.0 : stmt.column_double(6);
-    out.selection_seed = stmt.column_int64(7);
-    out.decision_features_json = stmt.column_is_null(8) ? std::string{} : stmt.column_text(8);
-    out.timestamp = stmt.column_int64(9);
+    out.reward_applied = static_cast<int>(stmt.column_int64(7));
+    out.selection_seed = stmt.column_int64(8);
+    out.decision_features_json = stmt.column_is_null(9) ? std::string{} : stmt.column_text(9);
+    out.timestamp = stmt.column_int64(10);
     return out;
 }
 

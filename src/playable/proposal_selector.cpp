@@ -147,6 +147,10 @@ SelectionDecision BanditSelector::select(
     };
 }
 
+std::string BanditSelector::feature_version() const {
+    return feature_version_;
+}
+
 void BanditSelector::update_with_reward(const std::vector<double>& decision_features, double reward) {
     if (weights_.size() < decision_features.size()) {
         weights_.resize(decision_features.size(), 0.0);

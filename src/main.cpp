@@ -24,6 +24,8 @@ struct CliArgs {
     double reward = -1.0;
     bool reward_mode = false;
     bool serve_mode = false;
+    bool dev_mode = false;
+    bool self_test_mode = false;
 };
 
 std::string generate_session_uuid() {
@@ -82,6 +84,14 @@ CliArgs parse_args(int argc, char** argv) {
             args.serve_mode = true;
             continue;
         }
+        if (current == "--dev") {
+            args.dev_mode = true;
+            continue;
+        }
+        if (current == "--self_test") {
+            args.self_test_mode = true;
+            continue;
+        }
         if (current == "--host" && i + 1 < argc) {
             args.host = argv[++i];
             continue;
@@ -137,6 +147,8 @@ int main(int argc, char** argv) {
                 .port = args.port,
                 .db_path = args.db_path,
                 .static_dir = args.static_dir,
+                .dev_mode = args.dev_mode,
+                .self_test_mode = args.self_test_mode,
             });
         }
 

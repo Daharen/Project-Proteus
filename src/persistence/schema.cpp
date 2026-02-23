@@ -7,7 +7,7 @@ namespace proteus::persistence {
 
 namespace {
 
-void create_tables_v3(SqliteDb& db) {
+void create_tables_v4(SqliteDb& db) {
     db.exec(
         "CREATE TABLE IF NOT EXISTS proposal_registry ("
         "proposal_id TEXT PRIMARY KEY,"
@@ -52,9 +52,21 @@ void create_tables_v3(SqliteDb& db) {
         "chosen_arm TEXT,"
         "novelty_flag INTEGER,"
         "reward_signal REAL,"
+        "reward_applied INTEGER NOT NULL DEFAULT 0,"
         "selection_seed INTEGER,"
         "decision_features_json TEXT,"
         "timestamp INTEGER"
+        ");"
+    );
+
+
+    db.exec(
+        "CREATE TABLE IF NOT EXISTS proposal_stats("
+        "proposal_id TEXT PRIMARY KEY,"
+        "shown_count INTEGER NOT NULL DEFAULT 0,"
+        "reward_sum REAL NOT NULL DEFAULT 0.0,"
+        "reward_count INTEGER NOT NULL DEFAULT 0,"
+        "last_shown_at INTEGER"
         ");"
     );
 
@@ -69,14 +81,15 @@ void create_tables_v3(SqliteDb& db) {
     db.exec("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);");
 }
 
-void rebuild_to_v3(SqliteDb& db) {
+void rebuild_to_v4(SqliteDb& db) {
     db.exec("DROP TABLE IF EXISTS prompt_candidates;");
     db.exec("DROP TABLE IF EXISTS interaction_log;");
     db.exec("DROP TABLE IF EXISTS prompt_cache;");
     db.exec("DROP TABLE IF EXISTS proposal_registry;");
+    db.exec("DROP TABLE IF EXISTS proposal_stats;");
     db.exec("DROP TABLE IF EXISTS bandit_state;");
     db.exec("DROP TABLE IF EXISTS meta;");
-    create_tables_v3(db);
+    create_tables_v4(db);
     auto insert_stmt = db.prepare("INSERT INTO meta(key, value) VALUES(?1, ?2);");
     insert_stmt.bind_text(1, "schema_version");
     insert_stmt.bind_text(2, std::to_string(kSchemaVersion));
@@ -86,7 +99,7 @@ void rebuild_to_v3(SqliteDb& db) {
 }  // namespace
 
 void ensure_schema(SqliteDb& db) {
-    create_tables_v3(db);
+    create_tables_v4(db);
 
     auto stmt = db.prepare("SELECT value FROM meta WHERE key = ?1;");
     stmt.bind_text(1, "schema_version");
@@ -106,7 +119,7 @@ void ensure_schema(SqliteDb& db) {
 
     const auto actual = std::stoi(schema_value);
     if (actual < kSchemaVersion) {
-        rebuild_to_v3(db);
+        rebuild_to_v4(db);
         return;
     }
 

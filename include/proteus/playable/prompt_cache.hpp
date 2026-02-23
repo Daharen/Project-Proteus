@@ -39,6 +39,7 @@ struct InteractionLogRecord {
     int novelty_flag = 0;
     double reward_signal = 0.0;
     bool reward_is_null = true;
+    int reward_applied = 0;
     std::int64_t selection_seed = 0;
     std::string decision_features_json;
     std::int64_t timestamp = 0;
@@ -63,7 +64,10 @@ bool upsert_proposal_registry(
 Proposal load_proposal(persistence::SqliteDb& db, const std::string& proposal_id);
 
 void insert_interaction_log(persistence::SqliteDb& db, const InteractionLogRecord& record);
-void log_reward_interaction(persistence::SqliteDb& db, const std::string& session_id, const std::string& proposal_id, double reward_value);
+bool log_reward_interaction_once(persistence::SqliteDb& db, const std::string& session_id, const std::string& proposal_id, double reward_value);
+
+void update_proposal_stats_on_show(persistence::SqliteDb& db, const std::string& proposal_id, std::int64_t timestamp);
+void update_proposal_stats_on_reward(persistence::SqliteDb& db, const std::string& proposal_id, double reward_value);
 
 std::int64_t count_proposal_registry_rows(persistence::SqliteDb& db, const std::string& proposal_id);
 std::optional<InteractionLogRecord> latest_interaction_for_session_and_arm(

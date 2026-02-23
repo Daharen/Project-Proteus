@@ -102,6 +102,10 @@ HttpRequest parse_request(int client_fd) {
         req.headers[trim(line.substr(0, pos))] = trim(line.substr(pos + 1));
     }
 
+    if (req.headers.count("Transfer-Encoding") > 0) {
+        throw std::runtime_error("chunked encoding unsupported");
+    }
+
     std::size_t content_length = 0;
     if (req.headers.count("Content-Length") > 0) {
         content_length = static_cast<std::size_t>(std::stoull(req.headers["Content-Length"]));
@@ -136,7 +140,8 @@ void send_response(int client_fd, int status, const nlohmann::json& payload, con
     out << "Access-Control-Allow-Origin: *\r\n";
     out << "Access-Control-Allow-Headers: Content-Type\r\n";
     out << "Access-Control-Allow-Methods: POST, GET, OPTIONS\r\n";
-    out << "Content-Length: " << body.size() << "\r\n\r\n";
+    out << "Content-Length: " << body.size() << "\r\n";
+    out << "Connection: close\r\n\r\n";
     out << body;
 
     const auto text = out.str();
@@ -150,7 +155,8 @@ void send_text(int client_fd, int status, const std::string& body, const std::st
     out << "Access-Control-Allow-Origin: *\r\n";
     out << "Access-Control-Allow-Headers: Content-Type\r\n";
     out << "Access-Control-Allow-Methods: POST, GET, OPTIONS\r\n";
-    out << "Content-Length: " << body.size() << "\r\n\r\n";
+    out << "Content-Length: " << body.size() << "\r\n";
+    out << "Connection: close\r\n\r\n";
     out << body;
     const auto text = out.str();
     ::send(client_fd, text.c_str(), text.size(), 0);
@@ -215,6 +221,12 @@ int run_server(const HttpServerConfig& config) {
         throw std::runtime_error("listen() failed");
     }
 
+    if (config.self_test_mode) {
+        persistence::SqliteDb db;
+        db.open(config.db_path);
+        persistence::ensure_schema(db);
+    }
+
     while (true) {
         sockaddr_in client_addr{};
         socklen_t client_len = sizeof(client_addr);
@@ -222,6 +234,12 @@ int run_server(const HttpServerConfig& config) {
         if (client_fd < 0) {
             continue;
         }
+
+        timeval tv{};
+        tv.tv_sec = 5;
+        tv.tv_usec = 0;
+        ::setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        ::setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
         try {
             const auto req = parse_request(client_fd);
@@ -292,12 +310,31 @@ int run_server(const HttpServerConfig& config) {
                             {"proposal_id", result.decision.proposal_id},
                             {"explored", result.decision.explored},
                             {"epsilon", result.decision.epsilon_used},
-                            {"selection_seed", static_cast<double>(result.decision.selection_seed)},
+                            {"selection_seed", std::to_string(result.decision.selection_seed)},
+                            {"selection_seed_hex", "0x" + ([](std::int64_t v){ std::ostringstream o; o<<std::hex<<static_cast<unsigned long long>(v); return o.str(); })(result.decision.selection_seed)},
                             {"decision_features", features_to_json(result.decision.decision_features)},
                         }},
                         {"proposal", result.proposal},
+                        {"candidate_count", static_cast<double>(list_prompt_candidate_ids(db, result.prompt_hash).size())},
                     }
                 );
+            } else if (req.method == "POST" && req.path == "/dev/reset") {
+                if (!config.dev_mode) {
+                    send_response(client_fd, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"dev mode disabled"})}});
+                    ::close(client_fd);
+                    continue;
+                }
+                persistence::SqliteDb db;
+                db.open(config.db_path);
+                db.exec("DROP TABLE IF EXISTS prompt_candidates;");
+                db.exec("DROP TABLE IF EXISTS interaction_log;");
+                db.exec("DROP TABLE IF EXISTS prompt_cache;");
+                db.exec("DROP TABLE IF EXISTS proposal_registry;");
+                db.exec("DROP TABLE IF EXISTS proposal_stats;");
+                db.exec("DROP TABLE IF EXISTS bandit_state;");
+                db.exec("DROP TABLE IF EXISTS meta;");
+                persistence::ensure_schema(db);
+                send_response(client_fd, 200, nlohmann::json{{"ok", true}});
             } else if (req.method == "POST" && req.path == "/reward") {
                 nlohmann::json body;
                 try {
@@ -329,9 +366,17 @@ int run_server(const HttpServerConfig& config) {
                 BanditSelector selector(db, kPlayableCorePolicyVersion);
                 const auto sid = body.at("session_id").get<std::string>();
                 const auto pid = body.at("proposal_id").get<std::string>();
-                const bool existed_before = latest_interaction_for_session_and_arm(db, sid, pid).has_value();
+                const auto before = latest_interaction_for_session_and_arm(db, sid, pid);
+                if (!before.has_value()) {
+                    send_response(client_fd, 200, nlohmann::json{{"ok", true}, {"updated", false}, {"errors", nlohmann::json::array({"No matching interaction"})}});
+                    ::close(client_fd);
+                    continue;
+                }
+                const bool already_applied = before->reward_applied != 0;
                 log_reward(db, selector, sid, pid, reward);
-                send_response(client_fd, 200, nlohmann::json{{"ok", true}, {"updated", existed_before}});
+                const auto after = latest_interaction_for_session_and_arm(db, sid, pid);
+                const bool updated = !already_applied && after.has_value() && after->reward_applied != 0;
+                send_response(client_fd, 200, nlohmann::json{{"ok", true}, {"updated", updated}});
             } else {
                 send_response(client_fd, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"Unknown route"})}});
             }
