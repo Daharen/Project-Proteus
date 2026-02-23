@@ -1,63 +1,28 @@
 #include "proteus/content/in_memory_graph.hpp"
+#include "proteus/inference/identity.hpp"
 #include "proteus/inference/novelty_hooks.hpp"
 #include "proteus/inference/question_selector.hpp"
 #include "proteus/inference/trace_log.hpp"
 
-#include <algorithm>
 #include <iostream>
+#include <unordered_map>
 #include <unordered_set>
 
-namespace {
-using namespace proteus;
+int main() {
+    using namespace proteus;
 
-content::InMemoryContentGraph build_demo_graph() {
+    const std::string domain = "identity";
     content::InMemoryContentGraph graph;
-    const std::string domain = "dark_magic";
-    const std::vector<std::string> targets = {
-        "blood_mage", "void_warlock", "dark_berserker", "shadow_executioner", "necromancer", "pyromancer"};
-    graph.set_domain_targets(domain, targets);
+    graph.seed_identity_v1_domain();
 
-    std::vector<inference::Question> questions = {
-        {"q1", "Your power fantasy?", {"Overwhelming power", "Control", "Support", "Burst", "Sustain", "Trickery", "I don't know"}},
-        {"q2", "Primary power source?", {"Blood", "Void", "Rage", "Shadows", "Death", "Flame", "I don't know"}},
-        {"q3", "Preferred combat range?", {"Melee", "Close-mid", "Mid", "Long", "Flexible", "Summoner range", "I don't know"}},
-        {"q4", "Risk appetite?", {"Self-sacrifice", "Calculated", "All-in", "Opportunistic", "Safe attrition", "Glass cannon", "I don't know"}},
-        {"q5", "Sustain feel?", {"Lifesteal", "Mana weave", "Kills reset", "Cooldown dance", "Minion drain", "Burn chain", "I don't know"}},
-        {"q6", "Emotional tone?", {"Noble pain", "Cosmic dread", "Fury", "Cold precision", "Macabre control", "Chaotic ecstasy", "I don't know"}},
-        {"q7", "Weapon vs resource identity?", {"Resource-first", "Tome focus", "Weapon focus", "Daggers", "Staff/minions", "Catalyst", "I don't know"}},
-        {"q8", "Where does tension live?", {"HP management", "Positioning", "Execution", "Stealth windows", "Army setup", "Combustion timing", "I don't know"}},
-    };
-    for (auto& q : questions) {
-        q.idk_index = inference::kIdkIndex;
-        graph.add_question(q);
+    const auto validation = graph.validate_likelihood_tables(domain);
+    if (!validation.ok) {
+        std::cerr << "Likelihood validation issues:\n";
+        for (const auto& issue : validation.issues) {
+            std::cerr << "  - " << issue.question_id << ": " << issue.message << "\n";
+        }
     }
 
-    auto setq = [&](const std::string& qid, const std::vector<std::vector<double>>& rows) {
-        for (std::size_t a = 0; a < inference::kTotalAnswerOptions; ++a) {
-            std::unordered_map<std::string, double> m;
-            for (std::size_t t = 0; t < targets.size(); ++t) {
-                m[targets[t]] = rows[a][t];
-            }
-            graph.set_likelihoods(qid, static_cast<inference::AnswerOption>(a), std::move(m));
-        }
-    };
-
-    setq("q1", {{0.9,0.6,0.8,0.7,0.5,0.8},{0.5,0.9,0.4,0.7,0.8,0.4},{0.6,0.4,0.3,0.3,0.9,0.2},{0.7,0.6,0.8,0.9,0.4,0.8},{0.9,0.5,0.7,0.5,0.6,0.4},{0.5,0.8,0.5,0.9,0.6,0.7},{0.2,0.2,0.2,0.2,0.2,0.2}});
-    setq("q2", {{0.95,0.1,0.2,0.2,0.2,0.1},{0.2,0.95,0.2,0.3,0.3,0.1},{0.3,0.2,0.95,0.2,0.2,0.1},{0.2,0.4,0.2,0.95,0.2,0.1},{0.3,0.3,0.2,0.2,0.95,0.1},{0.2,0.2,0.2,0.2,0.2,0.95},{0.2,0.2,0.2,0.2,0.2,0.2}});
-    setq("q3", {{0.2,0.1,0.8,0.4,0.2,0.1},{0.6,0.4,0.7,0.7,0.5,0.2},{0.8,0.7,0.4,0.8,0.6,0.4},{0.7,0.9,0.2,0.6,0.8,0.9},{0.6,0.7,0.6,0.8,0.6,0.6},{0.5,0.6,0.1,0.2,0.95,0.3},{0.2,0.2,0.2,0.2,0.2,0.2}});
-    setq("q4", {{0.95,0.4,0.8,0.5,0.4,0.6},{0.6,0.9,0.5,0.8,0.7,0.5},{0.8,0.5,0.95,0.7,0.3,0.9},{0.7,0.7,0.8,0.95,0.4,0.8},{0.4,0.8,0.2,0.4,0.95,0.3},{0.7,0.8,0.8,0.8,0.4,0.95},{0.2,0.2,0.2,0.2,0.2,0.2}});
-    setq("q5", {{0.95,0.2,0.5,0.3,0.6,0.2},{0.4,0.9,0.3,0.5,0.4,0.5},{0.5,0.5,0.9,0.7,0.3,0.6},{0.5,0.7,0.5,0.95,0.4,0.7},{0.6,0.5,0.3,0.3,0.95,0.2},{0.4,0.8,0.7,0.7,0.2,0.95},{0.2,0.2,0.2,0.2,0.2,0.2}});
-    setq("q6", {{0.95,0.5,0.3,0.5,0.4,0.2},{0.4,0.95,0.2,0.6,0.5,0.3},{0.4,0.2,0.95,0.3,0.2,0.7},{0.6,0.6,0.5,0.95,0.4,0.4},{0.5,0.5,0.2,0.4,0.95,0.2},{0.3,0.5,0.8,0.4,0.2,0.95},{0.2,0.2,0.2,0.2,0.2,0.2}});
-    setq("q7", {{0.95,0.5,0.3,0.3,0.4,0.6},{0.4,0.95,0.2,0.3,0.6,0.5},{0.3,0.2,0.95,0.4,0.2,0.4},{0.4,0.4,0.5,0.95,0.2,0.3},{0.3,0.5,0.2,0.2,0.95,0.3},{0.5,0.6,0.3,0.2,0.3,0.95},{0.2,0.2,0.2,0.2,0.2,0.2}});
-    setq("q8", {{0.95,0.4,0.6,0.3,0.4,0.2},{0.4,0.8,0.4,0.6,0.6,0.5},{0.6,0.5,0.95,0.7,0.3,0.7},{0.5,0.7,0.8,0.95,0.4,0.8},{0.4,0.5,0.2,0.3,0.95,0.3},{0.3,0.7,0.7,0.7,0.2,0.95},{0.2,0.2,0.2,0.2,0.2,0.2}});
-
-    return graph;
-}
-}  // namespace
-
-int main() {
-    const std::string domain = "dark_magic";
-    auto graph = build_demo_graph();
     const auto targets = graph.get_candidate_targets(domain);
     std::vector<inference::TargetScore> priors;
     priors.reserve(targets.size());
@@ -68,9 +33,9 @@ int main() {
     inference::BeliefState belief(std::move(priors));
     inference::QuestionSelector selector;
     inference::NoveltyDetector novelty({.max_questions = 10, .min_top_posterior = 0.55, .max_normalized_entropy = 0.65, .max_idk_answers = 3, .max_degenerate_recoveries = 2});
-    inference::InferenceTraceLog trace{.session_id = "demo-session"};
+    inference::InferenceTraceLog trace{.session_id = "identity-demo-session"};
 
-    std::vector<std::string> candidate_questions = {"q1", "q2", "q3", "q4", "q5", "q6", "q7", "q8"};
+    const auto candidate_questions = graph.get_domain_questions(domain);
     std::unordered_set<std::string> asked;
 
     std::size_t idk_answers = 0;
@@ -133,12 +98,29 @@ int main() {
         trace.final_backup_targets.push_back(picks[i].target_id);
     }
 
-    std::cout << "\nPrimary: " << trace.final_primary_target << "\n";
+    std::unordered_map<std::string, inference::IdentityArchetype> archetype_map;
+    for (const auto& archetype : graph.get_identity_archetypes()) {
+        archetype_map.emplace(archetype.id, archetype);
+    }
+
+    const auto novelty_signal = novelty.evaluate(belief, asked.size(), idk_answers, degenerate_recoveries);
+    const auto result = inference::build_identity_result(belief.distribution(), archetype_map, novelty_signal, 4);
+
+    std::cout << "\nPrimary archetype: " << trace.final_primary_target << "\n";
     std::cout << "Backups:\n";
     for (const auto& b : trace.final_backup_targets) {
         std::cout << "  - " << b << "\n";
     }
-    std::cout << "Novelty triggered: " << (trace.novelty_triggered ? "yes" : "no") << "\n";
+
+    std::cout << "\nDerived identity axes [-1,+1]:\n";
+    for (std::size_t i = 0; i < result.derived_axes.size(); ++i) {
+        std::cout << "  - " << inference::axis_name(static_cast<inference::IdentityAxis>(i)) << ": " << result.derived_axes[i] << "\n";
+    }
+
+    std::cout << "\nConfidence:\n";
+    std::cout << "  - top_posterior_strength: " << result.confidence.top_posterior_strength << "\n";
+    std::cout << "  - normalized_entropy: " << result.confidence.normalized_entropy << "\n";
+    std::cout << "  - novelty_triggered: " << (trace.novelty_triggered ? "yes" : "no") << "\n";
 
     return 0;
 }

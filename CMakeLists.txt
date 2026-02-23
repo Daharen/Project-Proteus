@@ -10,6 +10,7 @@ add_library(proteus_core
     src/inference/belief_state.cpp
     src/inference/question_selector.cpp
     src/inference/novelty_hooks.cpp
+    src/inference/identity.cpp
     src/content/in_memory_graph.cpp
 )
 
@@ -26,6 +27,7 @@ enable_testing()
 add_executable(proteus_tests
     tests/gtest_main.cpp
     tests/test_belief_state.cpp
+    tests/test_identity_inference.cpp
 )
 target_include_directories(proteus_tests PRIVATE tests/third_party)
 target_link_libraries(proteus_tests PRIVATE proteus_core)

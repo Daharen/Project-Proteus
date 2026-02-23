@@ -20,9 +20,19 @@ cmake --build build
 ctest --test-dir build
 ```
 
+
+## Identity Axes v1 (seeded in-memory)
+
+The in-memory content graph now seeds a canonical `identity` domain with:
+
+- 8 axes (`AgencyStyle`, `ChallengeAppetite`, `ExplorationDrive`, `SystemAppetite`, `RiskPosture`, `SocialPosture`, `NarrativePreference`, `MoralOrientation`).
+- 12 identity archetypes (`identity:planner`, `identity:wanderer`, etc.) represented as 8-float axis vectors.
+- 15 behavioral questions with 6 substantive options + `Unknown`.
+- Per-answer likelihood tables over all archetypes plus validation checks for near-zero/near-uniform/duplicate/non-differentiating entries.
+
 ## Immediate Next Steps
 
-1. Finalize v1 identity axes and `PlayerContext` schema.
+1. Wire identity inference payload into `PlayerContext` schema.
 2. Harden novelty thresholds and fallback policy using live play traces.
 3. Expand reinforcement math with volatility/switching penalties and coherence bonuses.
 4. Define offline hybrid composer grammar and discriminator flow.
