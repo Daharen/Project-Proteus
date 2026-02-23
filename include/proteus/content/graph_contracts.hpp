@@ -27,9 +27,13 @@ public:
     virtual inference::Question get_question(const std::string& question_id) const = 0;
     virtual std::vector<std::string> get_candidate_targets(const std::string& domain) const = 0;
 
-    // Contract: returns values in [0,1] proportional to P(answer | target, question).
-    // Values do not need to sum to 1 across answers, but must be comparable across answers
-    // for the same question to keep information-gain selection meaningful.
+        // Contract for likelihood semantics:
+    // - Questions must have exactly 7 options where index 6 is IDK/Unknown (`inference::kIdkIndex`).
+    // - Returns L[t] for each target t in `target_ids`, where L[t] is P(answer=a | target=t, question=Q).
+    // - Implementations should guarantee finite values and an epsilon floor (strictly > 0).
+    // - Normalization is per-target across answers for the same question:
+    //     sum_a P(answer=a | target=t, question=Q) = 1
+    //   This method returns one answer slice from that table.
     virtual std::vector<double> get_likelihoods(
         const std::string& question_id,
         inference::AnswerOption answer,

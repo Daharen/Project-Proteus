@@ -22,6 +22,31 @@ inference::AxisVector axis_profile(
     return profile;
 }
 
+double entropy_bits(const std::vector<double>& distribution) {
+    double h = 0.0;
+    for (const auto value : distribution) {
+        if (value > 0.0) {
+            h -= value * std::log2(value);
+        }
+    }
+    return h;
+}
+
+double cosine_similarity(const std::vector<double>& a, const std::vector<double>& b) {
+    double dot = 0.0;
+    double na = 0.0;
+    double nb = 0.0;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        dot += a[i] * b[i];
+        na += a[i] * a[i];
+        nb += b[i] * b[i];
+    }
+    if (na <= 0.0 || nb <= 0.0) {
+        return 1.0;
+    }
+    return dot / (std::sqrt(na) * std::sqrt(nb));
+}
+
 struct AuthoredIdentityQuestion {
     inference::Question question;
     std::array<inference::AxisVector, 6> answer_profiles;
@@ -89,38 +114,47 @@ void InMemoryContentGraph::seed_identity_v1_domain() {
     const auto authored_questions = identity_questions_v1();
     questions_by_domain_[domain].clear();
 
+    constexpr double kEpsilon = 1e-6;
+
     for (const auto& authored : authored_questions) {
         add_question(authored.question);
         questions_by_domain_[domain].push_back(authored.question.id);
 
-        for (std::size_t answer_index = 0; answer_index < inference::kTotalAnswerOptions; ++answer_index) {
-            std::unordered_map<std::string, double> normalized;
+        std::vector<std::vector<double>> table(
+            inference::kTotalAnswerOptions,
+            std::vector<double>(archetypes.size(), kEpsilon)
+        );
 
-            if (answer_index == inference::kIdkIndex) {
-                const double base = 1.0 / static_cast<double>(archetypes.size());
-                for (std::size_t i = 0; i < archetypes.size(); ++i) {
-                    // Near-uniform IDK with tiny deterministic offsets.
-                    normalized[archetypes[i].id] = base + 0.001 * static_cast<double>(i % 3);
+        for (std::size_t answer_index = 0; answer_index < inference::kIdkIndex; ++answer_index) {
+            const auto& profile = authored.answer_profiles[answer_index];
+            for (std::size_t i = 0; i < archetypes.size(); ++i) {
+                double dot = 0.0;
+                for (std::size_t axis = 0; axis < inference::kIdentityAxisCount; ++axis) {
+                    dot += static_cast<double>(profile[axis] * archetypes[i].axes[axis]);
                 }
-            } else {
-                std::vector<double> scores(archetypes.size(), 0.0);
-                const auto& profile = authored.answer_profiles[answer_index];
-                double sum = 0.0;
-                for (std::size_t i = 0; i < archetypes.size(); ++i) {
-                    double dot = 0.0;
-                    for (std::size_t axis = 0; axis < inference::kIdentityAxisCount; ++axis) {
-                        dot += static_cast<double>(profile[axis] * archetypes[i].axes[axis]);
-                    }
-                    const auto score = std::exp(1.25 * dot);
-                    scores[i] = score;
-                    sum += score;
-                }
-                for (std::size_t i = 0; i < archetypes.size(); ++i) {
-                    normalized[archetypes[i].id] = scores[i] / sum;
-                }
+                table[answer_index][i] += std::exp(1.25 * dot);
             }
+        }
 
-            set_likelihoods(authored.question.id, static_cast<inference::AnswerOption>(answer_index), std::move(normalized));
+        for (std::size_t i = 0; i < archetypes.size(); ++i) {
+            // Keep IDK low-impact and near-uniform by anchoring a fixed floor before per-target normalization.
+            table[inference::kIdkIndex][i] += 0.35 + 0.002 * static_cast<double>(i % 2);
+
+            double sum = 0.0;
+            for (std::size_t answer_index = 0; answer_index < inference::kTotalAnswerOptions; ++answer_index) {
+                sum += table[answer_index][i];
+            }
+            for (std::size_t answer_index = 0; answer_index < inference::kTotalAnswerOptions; ++answer_index) {
+                table[answer_index][i] /= sum;
+            }
+        }
+
+        for (std::size_t answer_index = 0; answer_index < inference::kTotalAnswerOptions; ++answer_index) {
+            std::unordered_map<std::string, double> likelihood_by_target;
+            for (std::size_t i = 0; i < archetypes.size(); ++i) {
+                likelihood_by_target[archetypes[i].id] = table[answer_index][i];
+            }
+            set_likelihoods(authored.question.id, static_cast<inference::AnswerOption>(answer_index), std::move(likelihood_by_target));
         }
     }
 }
@@ -144,23 +178,31 @@ std::vector<std::string> InMemoryContentGraph::get_domain_questions(const std::s
 }
 
 InMemoryContentGraph::LikelihoodValidationReport InMemoryContentGraph::validate_likelihood_tables(const std::string& domain) const {
+    constexpr double kEpsilon = 1e-6;
+    constexpr double kSubstantiveMinRatio = 2.0;
+    constexpr double kAnswerDuplicateCosineMax = 0.995;
+    constexpr double kIdkMaxKlBits = 0.02;
+    constexpr double kQuestionMinIgBits = 0.02;
+
     LikelihoodValidationReport report;
 
     const auto domain_it = targets_by_domain_.find(domain);
     if (domain_it == targets_by_domain_.end()) {
         report.ok = false;
-        report.issues.push_back({"<domain>", "domain has no targets"});
+        report.hard_violations.push_back({"<domain>", "domain has no targets", ValidationSeverity::HardViolation});
         return report;
     }
 
     const auto qit = questions_by_domain_.find(domain);
     if (qit == questions_by_domain_.end() || qit->second.empty()) {
         report.ok = false;
-        report.issues.push_back({"<domain>", "domain has no questions"});
+        report.hard_violations.push_back({"<domain>", "domain has no questions", ValidationSeverity::HardViolation});
         return report;
     }
 
     const auto& targets = domain_it->second;
+    const auto uniform_prior = std::vector<double>(targets.size(), 1.0 / static_cast<double>(targets.size()));
+    const auto prior_entropy = entropy_bits(uniform_prior);
 
     for (const auto& qid : qit->second) {
         std::vector<std::vector<double>> answer_rows;
@@ -168,56 +210,107 @@ InMemoryContentGraph::LikelihoodValidationReport InMemoryContentGraph::validate_
 
         for (std::size_t answer_index = 0; answer_index < inference::kTotalAnswerOptions; ++answer_index) {
             const auto likelihoods = get_likelihoods(qid, static_cast<inference::AnswerOption>(answer_index), targets);
+            if (likelihoods.size() != targets.size()) {
+                report.ok = false;
+                report.hard_violations.push_back({qid, "wrong likelihood vector length", ValidationSeverity::HardViolation});
+                continue;
+            }
+
+            for (const auto value : likelihoods) {
+                if (!std::isfinite(value)) {
+                    report.ok = false;
+                    report.hard_violations.push_back({qid, "contains NaN or Inf likelihood", ValidationSeverity::HardViolation});
+                    break;
+                }
+                if (value <= 0.0) {
+                    report.ok = false;
+                    report.hard_violations.push_back({qid, "contains non-positive likelihood", ValidationSeverity::HardViolation});
+                    break;
+                }
+            }
             answer_rows.push_back(likelihoods);
 
             const auto [min_it, max_it] = std::minmax_element(likelihoods.begin(), likelihoods.end());
-            if (*min_it <= 1e-6) {
-                report.ok = false;
-                report.issues.push_back({qid, "contains near-zero likelihood"});
+            if (*min_it <= kEpsilon) {
+                report.warnings.push_back({qid, "contains near-epsilon likelihood", ValidationSeverity::Warning});
             }
 
-            if (answer_index != inference::kIdkIndex && (*max_it - *min_it) < 0.02) {
+            if (answer_index != inference::kIdkIndex) {
+                const auto ratio = *max_it / std::max(*min_it, kEpsilon);
+                if (ratio < kSubstantiveMinRatio) {
+                    report.warnings.push_back({qid, "substantive answer under differentiability ratio", ValidationSeverity::Warning});
+                }
+            }
+        }
+
+        if (answer_rows.size() != inference::kTotalAnswerOptions) {
+            continue;
+        }
+
+        for (std::size_t t = 0; t < targets.size(); ++t) {
+            double sum_across_answers = 0.0;
+            for (std::size_t a = 0; a < inference::kTotalAnswerOptions; ++a) {
+                sum_across_answers += answer_rows[a][t];
+            }
+            if (std::abs(sum_across_answers - 1.0) > 1e-3) {
                 report.ok = false;
-                report.issues.push_back({qid, "substantive answer is near-uniform"});
+                report.hard_violations.push_back({qid, "per-target normalization violated", ValidationSeverity::HardViolation});
+                break;
             }
         }
 
         for (std::size_t a = 0; a < inference::kTotalAnswerOptions; ++a) {
             for (std::size_t b = a + 1; b < inference::kTotalAnswerOptions; ++b) {
-                double delta = 0.0;
-                for (std::size_t t = 0; t < targets.size(); ++t) {
-                    delta += std::abs(answer_rows[a][t] - answer_rows[b][t]);
-                }
-                if (delta < 1e-5) {
-                    report.ok = false;
-                    report.issues.push_back({qid, "two answers have effectively identical likelihoods"});
+                if (cosine_similarity(answer_rows[a], answer_rows[b]) >= kAnswerDuplicateCosineMax) {
+                    report.warnings.push_back({qid, "two answers are nearly duplicates", ValidationSeverity::Warning});
                 }
             }
         }
 
-        bool has_target_spread = false;
+        // IDK should have low posterior impact from a neutral prior.
+        const auto& idk = answer_rows[inference::kIdkIndex];
+        double mass = 0.0;
         for (std::size_t t = 0; t < targets.size(); ++t) {
-            double mean = 0.0;
-            for (std::size_t a = 0; a < inference::kIdkIndex; ++a) {
-                mean += answer_rows[a][t];
-            }
-            mean /= static_cast<double>(inference::kIdkIndex);
-
-            double variance = 0.0;
-            for (std::size_t a = 0; a < inference::kIdkIndex; ++a) {
-                const auto d = answer_rows[a][t] - mean;
-                variance += d * d;
-            }
-            variance /= static_cast<double>(inference::kIdkIndex);
-            if (variance > 1e-5) {
-                has_target_spread = true;
-                break;
-            }
+            mass += uniform_prior[t] * idk[t];
+        }
+        std::vector<double> idk_posterior(targets.size(), 0.0);
+        for (std::size_t t = 0; t < targets.size(); ++t) {
+            idk_posterior[t] = (uniform_prior[t] * idk[t]) / std::max(mass, kEpsilon);
+        }
+        double idk_kl = 0.0;
+        for (std::size_t t = 0; t < targets.size(); ++t) {
+            idk_kl += idk_posterior[t] * std::log2(idk_posterior[t] / uniform_prior[t]);
+        }
+        if (idk_kl > kIdkMaxKlBits) {
+            report.warnings.push_back({qid, "IDK has high posterior impact", ValidationSeverity::Warning});
         }
 
-        if (!has_target_spread) {
-            report.ok = false;
-            report.issues.push_back({qid, "question fails to differentiate targets"});
+        // Expected information gain under neutral prior.
+        double expected_entropy = 0.0;
+        double total_answer_mass = 0.0;
+        for (std::size_t a = 0; a < inference::kTotalAnswerOptions; ++a) {
+            double answer_mass = 0.0;
+            for (std::size_t t = 0; t < targets.size(); ++t) {
+                answer_mass += uniform_prior[t] * answer_rows[a][t];
+            }
+            if (answer_mass <= 0.0) {
+                continue;
+            }
+
+            std::vector<double> posterior(targets.size(), 0.0);
+            for (std::size_t t = 0; t < targets.size(); ++t) {
+                posterior[t] = (uniform_prior[t] * answer_rows[a][t]) / answer_mass;
+            }
+            expected_entropy += answer_mass * entropy_bits(posterior);
+            total_answer_mass += answer_mass;
+        }
+        if (total_answer_mass > 0.0) {
+            expected_entropy /= total_answer_mass;
+        }
+        const auto ig_bits = prior_entropy - expected_entropy;
+        report.information_gain_bits_by_question[qid] = ig_bits;
+        if (ig_bits < kQuestionMinIgBits) {
+            report.warnings.push_back({qid, "expected information gain is low", ValidationSeverity::Warning});
         }
     }
 

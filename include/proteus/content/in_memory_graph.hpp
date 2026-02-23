@@ -10,14 +10,22 @@ namespace proteus::content {
 
 class InMemoryContentGraph final : public ContentGraph {
 public:
+    enum class ValidationSeverity {
+        Warning,
+        HardViolation,
+    };
+
     struct LikelihoodValidationIssue {
         std::string question_id;
         std::string message;
+        ValidationSeverity severity = ValidationSeverity::Warning;
     };
 
     struct LikelihoodValidationReport {
         bool ok = true;
-        std::vector<LikelihoodValidationIssue> issues;
+        std::vector<LikelihoodValidationIssue> warnings;
+        std::vector<LikelihoodValidationIssue> hard_violations;
+        std::unordered_map<std::string, double> information_gain_bits_by_question;
     };
 
     void add_question(inference::Question question);

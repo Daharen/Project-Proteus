@@ -18,7 +18,7 @@ TEST(IdentityInferenceTest, SeedsIdentityDomainAndValidatesLikelihoods) {
 
     const auto report = graph.validate_likelihood_tables("identity");
     EXPECT_EQ(report.ok, true);
-    EXPECT_EQ(report.issues.empty(), true);
+    EXPECT_EQ(report.hard_violations.empty(), true);
 }
 
 TEST(IdentityInferenceTest, BuildsDerivedAxisVectorFromPosterior) {
@@ -75,4 +75,25 @@ TEST(PlayerContextTest, CapturesIdentitySignalsInCompactSchema) {
     EXPECT_GT(context.idk_rate, 0.2F);
     EXPECT_EQ(context.session_id, 0U);
     EXPECT_EQ(context.niche_id, 0U);
+}
+
+
+TEST(IdentityInferenceTest, LikelihoodTablesArePerTargetNormalized) {
+    proteus::content::InMemoryContentGraph graph;
+    graph.seed_identity_v1_domain();
+
+    const auto targets = graph.get_candidate_targets("identity");
+    const auto questions = graph.get_domain_questions("identity");
+
+    for (const auto& qid : questions) {
+        for (std::size_t t = 0; t < targets.size(); ++t) {
+            double sum = 0.0;
+            for (std::size_t a = 0; a < proteus::inference::kTotalAnswerOptions; ++a) {
+                const auto row = graph.get_likelihoods(qid, static_cast<proteus::inference::AnswerOption>(a), targets);
+                sum += row[t];
+            }
+            EXPECT_GT(1.001, sum);
+            EXPECT_GT(sum, 0.999);
+        }
+    }
 }

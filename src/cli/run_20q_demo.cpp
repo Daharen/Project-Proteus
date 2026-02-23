@@ -17,11 +17,23 @@ int main() {
     graph.seed_identity_v1_domain();
 
     const auto validation = graph.validate_likelihood_tables(domain);
-    if (!validation.ok) {
-        std::cerr << "Likelihood validation issues:\n";
-        for (const auto& issue : validation.issues) {
+    if (!validation.hard_violations.empty()) {
+        std::cerr << "Likelihood validation hard violations:\n";
+        for (const auto& issue : validation.hard_violations) {
             std::cerr << "  - " << issue.question_id << ": " << issue.message << "\n";
         }
+        return 1;
+    }
+    if (!validation.warnings.empty()) {
+        std::cerr << "Likelihood validation warnings:\n";
+        for (const auto& issue : validation.warnings) {
+            std::cerr << "  - " << issue.question_id << ": " << issue.message << "\n";
+        }
+    }
+
+    std::cout << "Validation debug (expected information gain in bits):\n";
+    for (const auto& [qid, ig] : validation.information_gain_bits_by_question) {
+        std::cout << "  - " << qid << ": " << ig << "\n";
     }
 
     const auto targets = graph.get_candidate_targets(domain);

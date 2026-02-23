@@ -40,9 +40,34 @@ The in-memory content graph now seeds a canonical `identity` domain with:
 - 15 behavioral questions with 6 substantive options + `Unknown`.
 - Per-answer likelihood tables over all archetypes plus validation checks for near-zero/near-uniform/duplicate/non-differentiating entries.
 
+
+## Likelihood Semantics + Authoring Rules v1
+
+Canonical semantics for `ContentGraph::get_likelihoods(question_id, answer, targets)`:
+
+- Returns one value per target `t`: `L[t] = P(answer=a | target=t, question=Q)`.
+- Questions are fixed to 7 options, with IDK at index `6`.
+- Likelihood tables are normalized **per-target across answers** for each question:
+  - `sum_a P(answer=a | target=t, question=Q) = 1`.
+- Values must be finite and strictly positive (epsilon-clamped by authored data + runtime safeguards).
+
+Validator checks (hard violations vs warnings):
+
+- **Hard**: wrong vector length, NaN/Inf, non-positive likelihood, per-target normalization failure.
+- **Warnings**: near-epsilon values, weak substantive differentiation ratio, near-duplicate answers, high-impact IDK (KL vs neutral prior), low expected information gain.
+- Validator also reports per-question expected information gain (bits) under a neutral prior for debug visibility.
+
+Authoring recipe (v1):
+
+1. For each substantive answer (0..5), pick 2–4 archetypes that are strongest matches.
+2. Assign rough weights (example): strong `0.18`, medium `0.10`, weak `0.06`, others `0.03`.
+3. Add a small epsilon floor to every cell.
+4. Keep IDK near-uniform and low-impact.
+5. Normalize per-target across all 7 answers.
+
 ## Immediate Next Steps
 
-1. Define and enforce likelihood authoring semantics/validation rules.
+1. Tune validator thresholds with live trace data and authoring feedback.
 2. Harden novelty thresholds and fallback policy using live play traces.
 3. Expand reinforcement math with volatility/switching penalties and coherence bonuses.
 4. Define offline hybrid composer grammar and discriminator flow.
