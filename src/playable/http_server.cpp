@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cerrno>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -21,7 +22,12 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <atomic>
 #include <vector>
+
+#ifdef _WIN32
+#include <winsock2.h>
+#endif
 
 namespace proteus::playable {
 
@@ -113,6 +119,54 @@ bool json_bool(const nlohmann::json& obj, const char* key, bool fallback) {
 
 bool almost_equal(double a, double b, double tol = 1e-6) {
     return std::abs(a - b) <= tol;
+}
+
+int last_socket_error_code() {
+#ifdef _WIN32
+    return WSAGetLastError();
+#else
+    return errno;
+#endif
+}
+
+std::filesystem::path resolve_static_root(const std::string& configured_static_root) {
+    if (!configured_static_root.empty()) {
+        return std::filesystem::absolute(std::filesystem::path(configured_static_root));
+    }
+
+    std::filesystem::path probe = std::filesystem::current_path();
+    for (int depth = 0; depth < 6; ++depth) {
+        const auto candidate = probe / "web";
+        if (std::filesystem::exists(candidate / "index.html")) {
+            return std::filesystem::absolute(candidate);
+        }
+        if (!probe.has_parent_path()) {
+            break;
+        }
+        probe = probe.parent_path();
+    }
+
+    return std::filesystem::absolute(std::filesystem::current_path() / "web");
+}
+
+bool wait_for_server_ready(const std::string& host, int port, int timeout_ms) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        httplib::Client client(host, port);
+        if (auto res = client.Get("/health")) {
+            if (res->status == 200) {
+                return true;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return false;
+}
+
+int pick_random_port() {
+    std::mt19937 rng(std::random_device{}());
+    std::uniform_int_distribution<int> dist(20000, 45000);
+    return dist(rng);
 }
 
 
@@ -646,21 +700,58 @@ int run_server(const HttpServerConfig& input_config) {
         config.dev_mode = true;
     }
 
+    const std::filesystem::path cwd = std::filesystem::current_path();
+    const std::filesystem::path resolved_static_root = resolve_static_root(config.static_dir);
+    config.static_dir = resolved_static_root.string();
+    if ((config.smoke_mode || config.self_test_mode) && config.port == 0) {
+        config.port = pick_random_port();
+    }
+
+    std::cout << "Server startup diagnostics:\n"
+              << "  host=" << config.host << "\n"
+              << "  port=" << config.port << "\n"
+              << "  static_root=" << resolved_static_root.string() << "\n"
+              << "  cwd=" << cwd.string() << "\n";
+
     persistence::SqliteDb db;
-    db.open(config.db_path);
-    persistence::ensure_schema(db);
+    persistence::open_and_migrate(db, config.db_path);
 
     httplib::Server svr;
     svr.set_payload_max_length(kMaxBodyBytes);
     register_routes(svr, config);
 
-    if (config.self_test_mode) {
-        std::thread server_thread([&]() {
-            svr.listen(config.host.c_str(), config.port);
-        });
+    std::atomic<bool> listen_success{false};
+    std::atomic<int> listen_error{0};
 
+    std::thread server_thread([&]() {
+        const bool ok = svr.listen(config.host.c_str(), config.port);
+        listen_success.store(ok);
+        if (!ok) {
+            listen_error.store(last_socket_error_code());
+        }
+    });
+
+    if (!wait_for_server_ready(config.host, config.port, 3000)) {
+        const int os_error = listen_error.load() != 0 ? listen_error.load() : last_socket_error_code();
+        std::cerr << "Server bind/listen failed: os_error=" << os_error << "\n";
+        svr.stop();
+        if (server_thread.joinable()) {
+            server_thread.join();
+        }
+        return 2;
+    }
+
+    std::cout << "Listening on http://127.0.0.1:" << config.port << "/\n";
+
+    if (config.smoke_mode) {
+        std::cout << "SMOKE_OK\n";
+        svr.stop();
+        server_thread.join();
+        return 0;
+    }
+
+    if (config.self_test_mode) {
         try {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
             const int rc = run_self_test(config);
             svr.stop();
             server_thread.join();
@@ -672,7 +763,12 @@ int run_server(const HttpServerConfig& input_config) {
         }
     }
 
-    svr.listen(config.host.c_str(), config.port);
+    server_thread.join();
+    if (!listen_success.load()) {
+        const int os_error = listen_error.load() != 0 ? listen_error.load() : last_socket_error_code();
+        std::cerr << "Server listen loop exited with failure: os_error=" << os_error << "\n";
+        return 3;
+    }
     return 0;
 }
 

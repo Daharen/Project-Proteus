@@ -12,20 +12,29 @@
 
 namespace {
 
+enum class CliMode {
+    Query,
+    Serve,
+    Migrate,
+    Help,
+};
+
 struct CliArgs {
+    CliMode mode = CliMode::Query;
+    bool serve_help = false;
     std::string domain;
     std::string prompt;
     std::string session_id;
     std::string proposal_id;
     std::string db_path = "./proteus.db";
     std::string host = "127.0.0.1";
-    std::string static_dir = "./web";
+    std::string static_dir;
     int port = 8080;
     double reward = -1.0;
     bool reward_mode = false;
-    bool serve_mode = false;
     bool dev_mode = false;
     bool self_test_mode = false;
+    bool smoke_mode = false;
 };
 
 std::string generate_session_uuid() {
@@ -50,18 +59,60 @@ std::string generate_session_uuid() {
     return std::string(out);
 }
 
+void print_help() {
+    std::cout
+        << "Usage:\n"
+        << "  proteus --domain <domain> --prompt <prompt> [--db <path>] [--session <id>]\n"
+        << "  proteus --reward <value> --proposal_id <id> [--session <id>] [--db <path>]\n"
+        << "  proteus --migrate [--db <path>]\n"
+        << "  proteus serve [--host 127.0.0.1] [--port 8080] [--db <path>] [--static_root <path>] [--dev] [--smoke]\n"
+        << "\n"
+        << "Modes:\n"
+        << "  query (default): use --domain/--prompt\n"
+        << "  serve: start local web server and API\n"
+        << "  migrate: apply DB migrations to latest schema version\n";
+}
 
-int pick_self_test_port() {
-    std::mt19937 rng(std::random_device{}());
-    std::uniform_int_distribution<int> dist(20000, 45000);
-    return dist(rng);
+void print_serve_help() {
+    std::cout
+        << "Usage: proteus serve [options]\n"
+        << "\n"
+        << "Options:\n"
+        << "  --host <host>           Bind host (default 127.0.0.1)\n"
+        << "  --port <port>           Bind port (default 8080, use 0 with --smoke for ephemeral)\n"
+        << "  --db <path>             SQLite DB path (default ./proteus.db)\n"
+        << "  --static_root <path>    Static web root (default auto-detected repo web/)\n"
+        << "  --dev                   Enable dev endpoints\n"
+        << "  --smoke                 Bind/listen probe, print SMOKE_OK, then shutdown\n"
+        << "  --help                  Show serve help\n";
 }
 
 CliArgs parse_args(int argc, char** argv) {
     CliArgs args;
+    int start_index = 1;
 
-    for (int i = 1; i < argc; ++i) {
+    if (argc >= 2) {
+        const std::string first = argv[1];
+        if (first == "serve") {
+            args.mode = CliMode::Serve;
+            start_index = 2;
+        }
+    }
+
+    for (int i = start_index; i < argc; ++i) {
         const std::string current = argv[i];
+        if (current == "--help" || current == "-h") {
+            if (args.mode == CliMode::Serve) {
+                args.serve_help = true;
+            } else {
+                args.mode = CliMode::Help;
+            }
+            continue;
+        }
+        if (current == "--migrate") {
+            args.mode = CliMode::Migrate;
+            continue;
+        }
         if (current == "--domain" && i + 1 < argc) {
             args.domain = argv[++i];
             continue;
@@ -88,7 +139,7 @@ CliArgs parse_args(int argc, char** argv) {
             continue;
         }
         if (current == "--serve") {
-            args.serve_mode = true;
+            args.mode = CliMode::Serve;
             continue;
         }
         if (current == "--dev") {
@@ -97,6 +148,12 @@ CliArgs parse_args(int argc, char** argv) {
         }
         if (current == "--self_test") {
             args.self_test_mode = true;
+            args.mode = CliMode::Serve;
+            continue;
+        }
+        if (current == "--smoke") {
+            args.smoke_mode = true;
+            args.mode = CliMode::Serve;
             continue;
         }
         if (current == "--host" && i + 1 < argc) {
@@ -107,14 +164,28 @@ CliArgs parse_args(int argc, char** argv) {
             args.port = std::stoi(argv[++i]);
             continue;
         }
-        if (current == "--static_dir" && i + 1 < argc) {
+        if ((current == "--static_root" || current == "--static_dir") && i + 1 < argc) {
             args.static_dir = argv[++i];
             continue;
         }
         throw std::runtime_error("Unknown or incomplete argument: " + current);
     }
 
-    if (args.serve_mode) {
+    if (args.mode == CliMode::Help || args.serve_help) {
+        return args;
+    }
+
+    if (args.mode == CliMode::Migrate) {
+        return args;
+    }
+
+    if (args.mode == CliMode::Serve) {
+        if (args.smoke_mode && args.port == 8080) {
+            args.port = 0;
+        }
+        if (args.self_test_mode && args.port == 8080) {
+            args.port = 0;
+        }
         return args;
     }
 
@@ -148,24 +219,37 @@ int main(int argc, char** argv) {
     try {
         const CliArgs args = parse_args(argc, argv);
 
-        if (args.serve_mode) {
-            int server_port = args.port;
-            if (args.self_test_mode && args.port == 8080) {
-                server_port = pick_self_test_port();
-            }
+        if (args.mode == CliMode::Help) {
+            print_help();
+            return 0;
+        }
+
+        if (args.serve_help) {
+            print_serve_help();
+            return 0;
+        }
+
+        if (args.mode == CliMode::Migrate) {
+            proteus::persistence::SqliteDb db;
+            proteus::persistence::open_and_migrate(db, args.db_path);
+            std::cout << "MIGRATE_OK version=" << proteus::persistence::kSchemaVersion << "\n";
+            return 0;
+        }
+
+        if (args.mode == CliMode::Serve) {
             return proteus::playable::run_server(proteus::playable::HttpServerConfig{
                 .host = args.host,
-                .port = server_port,
+                .port = args.port,
                 .db_path = args.db_path,
                 .static_dir = args.static_dir,
                 .dev_mode = args.dev_mode,
                 .self_test_mode = args.self_test_mode,
+                .smoke_mode = args.smoke_mode,
             });
         }
 
         proteus::persistence::SqliteDb db;
-        db.open(args.db_path);
-        proteus::persistence::ensure_schema(db);
+        proteus::persistence::open_and_migrate(db, args.db_path);
         proteus::playable::BanditSelector selector(db, proteus::playable::kPlayableCorePolicyVersion);
 
         if (args.reward_mode) {

@@ -11,6 +11,7 @@ struct HttpServerConfig {
     std::string static_dir = "./web";
     bool dev_mode = false;
     bool self_test_mode = false;
+    bool smoke_mode = false;
 };
 
 int run_server(const HttpServerConfig& config);
