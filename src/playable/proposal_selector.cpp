@@ -53,27 +53,35 @@ void BanditSelector::ensure_loaded() {
         return;
     }
 
-    const auto state = nlohmann::json::parse(stmt.column_text(0));
-    if (state.contains("epsilon") && state.at("epsilon").is_number()) {
-        epsilon_ = state.at("epsilon").get<double>();
-    }
-    if (state.contains("lr") && state.at("lr").is_number()) {
-        learning_rate_ = state.at("lr").get<double>();
-    }
-    if (state.contains("feature_version") && state.at("feature_version").is_string()) {
-        feature_version_ = state.at("feature_version").get<std::string>();
-    }
+    try {
+        const auto state = nlohmann::json::parse(stmt.column_text(0));
+        if (state.contains("epsilon") && state.at("epsilon").is_number()) {
+            epsilon_ = state.at("epsilon").get<double>();
+        }
+        if (state.contains("lr") && state.at("lr").is_number()) {
+            learning_rate_ = state.at("lr").get<double>();
+        }
+        if (state.contains("feature_version") && state.at("feature_version").is_string()) {
+            feature_version_ = state.at("feature_version").get<std::string>();
+        }
 
-    weights_.clear();
-    if (state.contains("weight_vector") && state.at("weight_vector").is_array()) {
-        for (const auto& v : state.at("weight_vector")) {
-            if (v.is_number()) {
-                weights_.push_back(v.get<double>());
+        weights_.clear();
+        if (state.contains("weight_vector") && state.at("weight_vector").is_array()) {
+            for (const auto& v : state.at("weight_vector")) {
+                if (v.is_number()) {
+                    weights_.push_back(v.get<double>());
+                }
             }
         }
-    }
-    if (weights_.empty()) {
+        if (weights_.empty()) {
+            weights_.assign(18, 0.0);
+        }
+    } catch (const std::exception&) {
+        epsilon_ = 0.10;
+        learning_rate_ = 0.01;
+        feature_version_ = "v1";
         weights_.assign(18, 0.0);
+        persist_state();
     }
 }
 

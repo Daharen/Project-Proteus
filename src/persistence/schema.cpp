@@ -7,7 +7,7 @@ namespace proteus::persistence {
 
 namespace {
 
-void create_tables_v5(SqliteDb& db) {
+void create_tables_v6(SqliteDb& db) {
     db.exec(
         "CREATE TABLE IF NOT EXISTS proposal_registry ("
         "proposal_id TEXT PRIMARY KEY,"
@@ -63,6 +63,10 @@ void create_tables_v5(SqliteDb& db) {
         "reward_applied INTEGER NOT NULL DEFAULT 0,"
         "selection_seed INTEGER,"
         "decision_features_json TEXT,"
+        "stable_player_id TEXT,"
+        "base_score REAL,"
+        "topology_modifier REAL,"
+        "final_score REAL,"
         "timestamp INTEGER"
         ");"
     );
@@ -87,9 +91,10 @@ void create_tables_v5(SqliteDb& db) {
     );
 
     db.exec("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_interaction_log_player_id ON interaction_log(stable_player_id);");
 }
 
-void rebuild_to_v5(SqliteDb& db) {
+void rebuild_to_v6(SqliteDb& db) {
     db.exec("DROP TABLE IF EXISTS prompt_meta;");
     db.exec("DROP TABLE IF EXISTS prompt_candidates;");
     db.exec("DROP TABLE IF EXISTS interaction_log;");
@@ -98,17 +103,26 @@ void rebuild_to_v5(SqliteDb& db) {
     db.exec("DROP TABLE IF EXISTS proposal_stats;");
     db.exec("DROP TABLE IF EXISTS bandit_state;");
     db.exec("DROP TABLE IF EXISTS meta;");
-    create_tables_v5(db);
+    create_tables_v6(db);
     auto insert_stmt = db.prepare("INSERT INTO meta(key, value) VALUES(?1, ?2);");
     insert_stmt.bind_text(1, "schema_version");
     insert_stmt.bind_text(2, std::to_string(kSchemaVersion));
     insert_stmt.step();
 }
 
+
+void migrate_v5_to_v6(SqliteDb& db) {
+    db.exec("ALTER TABLE interaction_log ADD COLUMN stable_player_id TEXT;");
+    db.exec("ALTER TABLE interaction_log ADD COLUMN base_score REAL;");
+    db.exec("ALTER TABLE interaction_log ADD COLUMN topology_modifier REAL;");
+    db.exec("ALTER TABLE interaction_log ADD COLUMN final_score REAL;");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_interaction_log_player_id ON interaction_log(stable_player_id);");
+}
+
 }  // namespace
 
 void ensure_schema(SqliteDb& db) {
-    create_tables_v5(db);
+    create_tables_v6(db);
 
     auto stmt = db.prepare("SELECT value FROM meta WHERE key = ?1;");
     stmt.bind_text(1, "schema_version");
@@ -127,8 +141,16 @@ void ensure_schema(SqliteDb& db) {
     }
 
     const auto actual = std::stoi(schema_value);
+    if (actual == 5 && kSchemaVersion == 6) {
+        migrate_v5_to_v6(db);
+        auto up = db.prepare("UPDATE meta SET value = ?1 WHERE key = ?2;");
+        up.bind_text(1, std::to_string(kSchemaVersion));
+        up.bind_text(2, "schema_version");
+        up.step();
+        return;
+    }
     if (actual < kSchemaVersion) {
-        rebuild_to_v5(db);
+        rebuild_to_v6(db);
         return;
     }
 

@@ -161,8 +161,8 @@ Proposal load_proposal(persistence::SqliteDb& db, const std::string& proposal_id
 void insert_interaction_log(persistence::SqliteDb& db, const InteractionLogRecord& record) {
     auto stmt = db.prepare(
         "INSERT INTO interaction_log("
-        "session_id, prompt_hash, player_context_json, chosen_arm, novelty_flag, reward_signal, reward_applied, selection_seed, decision_features_json, timestamp"
-        ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10);"
+        "session_id, prompt_hash, player_context_json, chosen_arm, novelty_flag, reward_signal, reward_applied, selection_seed, decision_features_json, stable_player_id, base_score, topology_modifier, final_score, timestamp"
+        ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14);"
     );
     stmt.bind_text(1, record.session_id);
     stmt.bind_text(2, record.prompt_hash);
@@ -177,7 +177,15 @@ void insert_interaction_log(persistence::SqliteDb& db, const InteractionLogRecor
     stmt.bind_int64(7, record.reward_applied);
     stmt.bind_int64(8, record.selection_seed);
     stmt.bind_text(9, record.decision_features_json);
-    stmt.bind_int64(10, record.timestamp);
+    if (record.stable_player_id.empty()) {
+        stmt.bind_null(10);
+    } else {
+        stmt.bind_text(10, record.stable_player_id);
+    }
+    stmt.bind_double(11, record.base_score);
+    stmt.bind_double(12, record.topology_modifier);
+    stmt.bind_double(13, record.final_score);
+    stmt.bind_int64(14, record.timestamp);
     stmt.step();
 }
 
@@ -251,7 +259,7 @@ std::optional<InteractionLogRecord> latest_interaction_for_session_and_arm(
     const std::string& proposal_id
 ) {
     auto stmt = db.prepare(
-        "SELECT id, session_id, prompt_hash, player_context_json, chosen_arm, novelty_flag, reward_signal, reward_applied, selection_seed, decision_features_json, timestamp "
+        "SELECT id, session_id, prompt_hash, player_context_json, chosen_arm, novelty_flag, reward_signal, reward_applied, selection_seed, decision_features_json, stable_player_id, base_score, topology_modifier, final_score, timestamp "
         "FROM interaction_log WHERE session_id = ?1 AND chosen_arm = ?2 ORDER BY id DESC LIMIT 1;"
     );
     stmt.bind_text(1, session_id);
@@ -272,7 +280,11 @@ std::optional<InteractionLogRecord> latest_interaction_for_session_and_arm(
     out.reward_applied = static_cast<int>(stmt.column_int64(7));
     out.selection_seed = stmt.column_int64(8);
     out.decision_features_json = stmt.column_is_null(9) ? std::string{} : stmt.column_text(9);
-    out.timestamp = stmt.column_int64(10);
+    out.stable_player_id = stmt.column_is_null(10) ? std::string{} : stmt.column_text(10);
+    out.base_score = stmt.column_is_null(11) ? 0.0 : stmt.column_double(11);
+    out.topology_modifier = stmt.column_is_null(12) ? 0.0 : stmt.column_double(12);
+    out.final_score = stmt.column_is_null(13) ? 0.0 : stmt.column_double(13);
+    out.timestamp = stmt.column_int64(14);
     return out;
 }
 

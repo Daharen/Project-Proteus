@@ -115,6 +115,46 @@ bool almost_equal(double a, double b, double tol = 1e-6) {
     return std::abs(a - b) <= tol;
 }
 
+
+std::string query_param(const std::string& path, const std::string& key) {
+    const auto qpos = path.find('?');
+    if (qpos == std::string::npos) {
+        return {};
+    }
+    const std::string query = path.substr(qpos + 1);
+    const std::string needle = key + "=";
+    std::size_t start = 0;
+    while (start < query.size()) {
+        const auto end = query.find('&', start);
+        const std::string token = query.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        if (token.rfind(needle, 0) == 0) {
+            return token.substr(needle.size());
+        }
+        if (end == std::string::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+    return {};
+}
+
+std::string request_player_id(const httplib::Request& req) {
+    return query_param(req.path, "player_id");
+}
+
+int request_limit(const httplib::Request& req, int fallback, int min_v, int max_v) {
+    const std::string raw = query_param(req.path, "limit");
+    if (raw.empty()) {
+        return fallback;
+    }
+    try {
+        const int v = std::stoi(raw);
+        return std::max(min_v, std::min(max_v, v));
+    } catch (const std::exception&) {
+        return fallback;
+    }
+}
+
 nlohmann::json candidate_scores_to_json(const std::vector<CandidateScoreDebug>& scores) {
     nlohmann::json arr = nlohmann::json::array({});
     for (const auto& score : scores) {
@@ -220,6 +260,124 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
         }}});
     });
 
+    svr.Get(R"(/dev/player_state.*)", [config](const httplib::Request& req, httplib::Response& res) {
+        if (!config.dev_mode) {
+            send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"dev mode disabled"})}});
+            return;
+        }
+        const std::string player_id = request_player_id(req);
+        if (player_id.empty()) {
+            send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"player_id required"})}});
+            return;
+        }
+
+        persistence::SqliteDb db;
+        db.open(config.db_path);
+        persistence::ensure_schema(db);
+
+        std::int64_t query_count = 0;
+        std::int64_t reward_count = 0;
+        std::int64_t like_count = 0;
+        std::int64_t dislike_count = 0;
+        double reward_sum = 0.0;
+        {
+            auto query_count_stmt = db.prepare("SELECT COUNT(*) FROM interaction_log WHERE stable_player_id = ?1;");
+            query_count_stmt.bind_text(1, player_id);
+            if (query_count_stmt.step()) {
+                query_count = query_count_stmt.column_int64(0);
+            }
+        }
+        {
+            auto stmt = db.prepare(
+                "SELECT COUNT(*) AS reward_count, "
+                "SUM(CASE WHEN reward_signal > 0 THEN 1 ELSE 0 END) AS like_count, "
+                "SUM(CASE WHEN reward_signal <= 0 THEN 1 ELSE 0 END) AS dislike_count, "
+                "COALESCE(SUM(reward_signal), 0) AS reward_sum "
+                "FROM interaction_log WHERE stable_player_id = ?1 AND reward_applied = 1;"
+            );
+            stmt.bind_text(1, player_id);
+            if (stmt.step()) {
+                reward_count = stmt.column_int64(0);
+                like_count = stmt.column_int64(1);
+                dislike_count = stmt.column_int64(2);
+                reward_sum = stmt.column_double(3);
+            }
+        }
+
+        std::int64_t last_timestamp = 0;
+        std::string last_prompt_hash;
+        std::string last_proposal_id;
+        {
+            auto stmt = db.prepare(
+                "SELECT timestamp, prompt_hash, chosen_arm FROM interaction_log "
+                "WHERE stable_player_id = ?1 ORDER BY id DESC LIMIT 1;"
+            );
+            stmt.bind_text(1, player_id);
+            if (stmt.step()) {
+                last_timestamp = stmt.column_int64(0);
+                last_prompt_hash = stmt.column_is_null(1) ? std::string{} : stmt.column_text(1);
+                last_proposal_id = stmt.column_is_null(2) ? std::string{} : stmt.column_text(2);
+            }
+        }
+
+        send_json(res, 200, nlohmann::json{
+            {"ok", true},
+            {"player_id", player_id},
+            {"totals", nlohmann::json{
+                {"query_count", static_cast<double>(query_count)},
+                {"reward_count", static_cast<double>(reward_count)},
+                {"like_count", static_cast<double>(like_count)},
+                {"dislike_count", static_cast<double>(dislike_count)},
+                {"reward_sum", reward_sum},
+            }},
+            {"last_seen", nlohmann::json{
+                {"timestamp", static_cast<double>(last_timestamp)},
+                {"prompt_hash", last_prompt_hash.empty() ? nlohmann::json(nullptr) : nlohmann::json(last_prompt_hash)},
+                {"proposal_id", last_proposal_id.empty() ? nlohmann::json(nullptr) : nlohmann::json(last_proposal_id)},
+            }},
+        });
+    });
+
+    svr.Get(R"(/dev/recent_interactions.*)", [config](const httplib::Request& req, httplib::Response& res) {
+        if (!config.dev_mode) {
+            send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"dev mode disabled"})}});
+            return;
+        }
+        const std::string player_id = request_player_id(req);
+        if (player_id.empty()) {
+            send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"player_id required"})}});
+            return;
+        }
+        const int limit = request_limit(req, 25, 1, 100);
+
+        persistence::SqliteDb db;
+        db.open(config.db_path);
+        persistence::ensure_schema(db);
+
+        auto stmt = db.prepare(
+            "SELECT id, timestamp, prompt_hash, chosen_arm, base_score, topology_modifier, final_score, reward_signal "
+            "FROM interaction_log WHERE stable_player_id = ?1 ORDER BY id DESC LIMIT ?2;"
+        );
+        stmt.bind_text(1, player_id);
+        stmt.bind_int64(2, limit);
+
+        nlohmann::json rows = nlohmann::json::array({});
+        while (stmt.step()) {
+            rows.push_back(nlohmann::json{
+                {"id", static_cast<double>(stmt.column_int64(0))},
+                {"created_at", static_cast<double>(stmt.column_int64(1))},
+                {"prompt_hash", stmt.column_is_null(2) ? nlohmann::json(nullptr) : nlohmann::json(stmt.column_text(2))},
+                {"proposal_id", stmt.column_is_null(3) ? nlohmann::json(nullptr) : nlohmann::json(stmt.column_text(3))},
+                {"base_score", stmt.column_is_null(4) ? 0.0 : stmt.column_double(4)},
+                {"topology_modifier", stmt.column_is_null(5) ? 0.0 : stmt.column_double(5)},
+                {"final_score", stmt.column_is_null(6) ? 0.0 : stmt.column_double(6)},
+                {"reward", stmt.column_is_null(7) ? nlohmann::json(nullptr) : nlohmann::json(stmt.column_double(7))},
+            });
+        }
+
+        send_json(res, 200, nlohmann::json{{"ok", true}, {"player_id", player_id}, {"limit", static_cast<double>(limit)}, {"rows", rows}});
+    });
+
     svr.Post("/query", [config](const httplib::Request& req, httplib::Response& res) {
         nlohmann::json body;
         try {
@@ -244,16 +402,18 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
         persistence::ensure_schema(db);
         BanditSelector selector(db, kPlayableCorePolicyVersion);
 
+        const auto context = parse_player_context(body);
         const auto result = run_retrieval_detailed(
             db,
             RetrievalRequest{
                 .domain = body.at("domain").get<std::string>(),
                 .raw_prompt = body.at("prompt").get<std::string>(),
                 .session_id = session_id,
-                .player_context = parse_player_context(body),
+                .player_context = context,
             },
             selector
         );
+        const std::string stable_player_id = context.stable_player_id.empty() ? session_id : context.stable_player_id;
 
         send_json(res, 200, nlohmann::json{
             {"ok", true},
@@ -261,6 +421,7 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
             {"prompt_hash", result.prompt_hash},
             {"decision", nlohmann::json{
                 {"proposal_id", result.decision.proposal_id},
+                {"stable_player_id", stable_player_id},
                 {"explored", result.decision.explored},
                 {"epsilon", result.decision.epsilon_used},
                 {"selection_seed", std::to_string(result.decision.selection_seed)},

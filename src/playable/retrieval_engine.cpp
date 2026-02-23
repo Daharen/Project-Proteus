@@ -300,6 +300,7 @@ RetrievalResult run_retrieval_detailed(
         throw std::runtime_error("Selected proposal_id not found in candidates");
     }
 
+    const std::string stable_player_id = request.player_context.stable_player_id.empty() ? request.session_id : request.player_context.stable_player_id;
     insert_interaction_log(
         db,
         InteractionLogRecord{
@@ -312,6 +313,10 @@ RetrievalResult run_retrieval_detailed(
             .reward_is_null = true,
             .selection_seed = decision.selection_seed,
             .decision_features_json = serialize_features(decision.decision_features, selector.feature_version()),
+            .stable_player_id = stable_player_id,
+            .base_score = decision.base_score,
+            .topology_modifier = decision.topology_modifier,
+            .final_score = decision.final_score,
             .timestamp = now,
         }
     );
