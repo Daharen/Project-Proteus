@@ -27,7 +27,15 @@ add_library(proteus_core
 )
 
 target_include_directories(proteus_core PUBLIC include)
-target_link_libraries(proteus_core PUBLIC SQLite::SQLite3 OpenSSL::Crypto)
+if(TARGET SQLite3::SQLite3)
+    set(PROTEUS_SQLITE_TARGET SQLite3::SQLite3)
+elseif(TARGET SQLite::SQLite3)
+    set(PROTEUS_SQLITE_TARGET SQLite::SQLite3)
+else()
+    message(FATAL_ERROR "No compatible SQLite CMake target found (expected SQLite3::SQLite3 or SQLite::SQLite3)")
+endif()
+
+target_link_libraries(proteus_core PUBLIC ${PROTEUS_SQLITE_TARGET} OpenSSL::Crypto)
 
 add_executable(proteus_cli src/main.cpp)
 set_target_properties(proteus_cli PROPERTIES OUTPUT_NAME proteus)
