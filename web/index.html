@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Proteus Local Playtest</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <h1>Proteus Playtest</h1>
+  <label>Domain <input id="domain" value="rpg" /></label>
+  <label>Session <input id="session" /></label>
+  <button id="genSession">Generate</button>
+  <br/>
+  <textarea id="prompt" rows="4" cols="70" placeholder="help me find a quest"></textarea>
+  <br/>
+  <button id="queryBtn">Query</button>
+  <div id="status"></div>
+
+  <h3>Proposal text</h3>
+  <pre id="proposalText"></pre>
+
+  <h3>Debug</h3>
+  <pre id="debug"></pre>
+
+  <h3>Proposal JSON</h3>
+  <pre id="proposalJson"></pre>
+
+  <h3>Reward</h3>
+  <button class="star" data-score="1">★1</button>
+  <button class="star" data-score="2">★2</button>
+  <button class="star" data-score="3">★3</button>
+  <button class="star" data-score="4">★4</button>
+  <button class="star" data-score="5">★5</button>
+
+  <script src="/app.js"></script>
+</body>
+</html>

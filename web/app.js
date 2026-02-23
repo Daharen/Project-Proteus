@@ -1,0 +1,61 @@
+let lastProposalId = "";
+
+function randSession() {
+  return Math.random().toString(16).slice(2) + Date.now().toString(16);
+}
+
+document.getElementById('genSession').addEventListener('click', () => {
+  document.getElementById('session').value = randSession();
+});
+
+async function postJson(url, payload) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  return await res.json();
+}
+
+document.getElementById('queryBtn').addEventListener('click', async () => {
+  const domain = document.getElementById('domain').value.trim();
+  const prompt = document.getElementById('prompt').value;
+  let session_id = document.getElementById('session').value.trim();
+  if (!session_id) {
+    session_id = randSession();
+    document.getElementById('session').value = session_id;
+  }
+
+  const data = await postJson('/query', { domain, prompt, session_id });
+  if (!data.ok) {
+    document.getElementById('status').textContent = 'Error: ' + JSON.stringify(data.errors || []);
+    return;
+  }
+
+  lastProposalId = data.decision.proposal_id;
+  document.getElementById('proposalText').textContent = data.proposal.text || '(no text)';
+  document.getElementById('proposalJson').textContent = JSON.stringify(data.proposal, null, 2);
+  document.getElementById('debug').textContent = JSON.stringify({
+    prompt_hash: data.prompt_hash,
+    explored: data.decision.explored,
+    epsilon: data.decision.epsilon,
+    seed: data.decision.selection_seed,
+    proposal_id: data.decision.proposal_id,
+    session_id: data.session_id,
+  }, null, 2);
+  document.getElementById('status').textContent = 'Query OK';
+});
+
+for (const btn of document.querySelectorAll('.star')) {
+  btn.addEventListener('click', async () => {
+    const session_id = document.getElementById('session').value.trim();
+    if (!session_id || !lastProposalId) {
+      document.getElementById('status').textContent = 'Query first to get session/proposal_id';
+      return;
+    }
+    const stars = Number(btn.dataset.score);
+    const reward = (stars - 1) / 4;
+    const data = await postJson('/reward', { session_id, proposal_id: lastProposalId, reward });
+    document.getElementById('status').textContent = data.ok ? `Reward OK (${reward.toFixed(2)})` : 'Reward error';
+  });
+}
