@@ -8,12 +8,38 @@ on:
 jobs:
   build-package:
     runs-on: windows-2022
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}\\vcpkg
+      VCPKG_DEFAULT_TRIPLET: x64-windows
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup vcpkg
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "$env:VCPKG_ROOT")) {
+            git clone https://github.com/microsoft/vcpkg "$env:VCPKG_ROOT"
+          }
+          & "$env:VCPKG_ROOT\\bootstrap-vcpkg.bat"
+
+      - name: Install vcpkg dependencies
+        shell: pwsh
+        run: |
+          & "$env:VCPKG_ROOT\\vcpkg.exe" install sqlite3:$env:VCPKG_DEFAULT_TRIPLET openssl:$env:VCPKG_DEFAULT_TRIPLET
+
+      - name: Verify vcpkg packages
+        shell: pwsh
+        run: |
+          Write-Host "VCPKG_ROOT=$env:VCPKG_ROOT"
+          $installed = & "$env:VCPKG_ROOT\\vcpkg.exe" list
+          $installed
+          if (-not ($installed | Select-String -Pattern "^sqlite3:x64-windows")) {
+            throw "sqlite3:x64-windows not found in vcpkg installed package list"
+          }
+
       - name: Configure (VS2022 x64)
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\\scripts\\buildsystems\\vcpkg.cmake" -DVCPKG_TARGET_TRIPLET="$env:VCPKG_DEFAULT_TRIPLET"
 
       - name: Build Release
         run: cmake --build build --config Release
