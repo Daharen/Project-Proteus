@@ -27,6 +27,17 @@ bool column_exists(SqliteDb& db, const std::string& table_name, const std::strin
 }
 
 int current_schema_version(SqliteDb& db) {
+    if (table_exists(db, "schema_meta")) {
+        auto stmt = db.prepare("SELECT value FROM schema_meta WHERE key = ?1;");
+        stmt.bind_text(1, "schema_version");
+        if (stmt.step()) {
+            const std::string value = stmt.column_text(0);
+            if (!value.empty()) {
+                return std::stoi(value);
+            }
+        }
+    }
+
     if (!table_exists(db, "meta")) {
         return 0;
     }
@@ -45,6 +56,15 @@ int current_schema_version(SqliteDb& db) {
 }
 
 void set_schema_version(SqliteDb& db, int version) {
+    db.exec("CREATE TABLE IF NOT EXISTS schema_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);");
+    auto schema_stmt = db.prepare(
+        "INSERT INTO schema_meta(key, value) VALUES(?1, ?2) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value;"
+    );
+    schema_stmt.bind_text(1, "schema_version");
+    schema_stmt.bind_text(2, std::to_string(version));
+    schema_stmt.step();
+
     db.exec("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);");
     auto stmt = db.prepare(
         "INSERT INTO meta(key, value) VALUES(?1, ?2) "
@@ -218,6 +238,53 @@ void migrate_6_to_7(SqliteDb& db) {
 }
 
 
+void migrate_7_to_8(SqliteDb& db) {
+    db.exec(
+        "CREATE TABLE IF NOT EXISTS schema_meta ("
+        "key TEXT PRIMARY KEY,"
+        "value TEXT NOT NULL"
+        ");"
+    );
+
+    db.exec(
+        "CREATE TABLE IF NOT EXISTS query_player_aggregate ("
+        "query_id INTEGER NOT NULL,"
+        "stable_player_id TEXT NOT NULL,"
+        "total_interactions INTEGER NOT NULL,"
+        "total_base_score REAL NOT NULL,"
+        "total_final_score REAL NOT NULL,"
+        "mean_final_score REAL NOT NULL,"
+        "variance_final_score REAL NOT NULL,"
+        "last_updated_timestamp INTEGER NOT NULL,"
+        "PRIMARY KEY (query_id, stable_player_id)"
+        ");"
+    );
+    db.exec("CREATE INDEX IF NOT EXISTS idx_qpa_player ON query_player_aggregate(stable_player_id);");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_qpa_query ON query_player_aggregate(query_id);");
+
+    db.exec(
+        "CREATE TABLE IF NOT EXISTS query_cluster_stats ("
+        "query_id INTEGER PRIMARY KEY,"
+        "distinct_players INTEGER NOT NULL,"
+        "total_interactions INTEGER NOT NULL,"
+        "mean_final_score REAL NOT NULL,"
+        "entropy_score REAL NOT NULL,"
+        "divergence_index REAL NOT NULL,"
+        "last_recomputed_timestamp INTEGER NOT NULL"
+        ");"
+    );
+
+    db.exec(
+        "CREATE TABLE IF NOT EXISTS player_preference_vector ("
+        "stable_player_id TEXT PRIMARY KEY,"
+        "vector_blob BLOB NOT NULL,"
+        "dimensionality INTEGER NOT NULL,"
+        "last_recomputed_timestamp INTEGER NOT NULL"
+        ");"
+    );
+}
+
+
 void verify_sqlite_capabilities(SqliteDb& db, bool verbose) {
     auto fts_stmt = db.prepare("SELECT sqlite_compileoption_used('ENABLE_FTS5');");
     if (!fts_stmt.step() || fts_stmt.column_int64(0) == 0) {
@@ -244,6 +311,7 @@ void apply_migration(SqliteDb& db, int from_version) {
         case 4: migrate_4_to_5(db); return;
         case 5: migrate_5_to_6(db); return;
         case 6: migrate_6_to_7(db); return;
+        case 7: migrate_7_to_8(db); return;
         default: throw std::runtime_error("Unsupported schema version: " + std::to_string(from_version));
     }
 }

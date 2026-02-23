@@ -1,9 +1,11 @@
 #include "proteus/persistence/sqlite_db.hpp"
 
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace proteus::persistence {
 
@@ -77,6 +79,19 @@ void SqliteStatement::bind_double(int index, double value) {
     }
 }
 
+void SqliteStatement::bind_blob(int index, const std::vector<std::uint8_t>& value) {
+    const int rc = sqlite3_bind_blob(
+        stmt_,
+        index,
+        value.empty() ? nullptr : value.data(),
+        static_cast<int>(value.size()),
+        SQLITE_TRANSIENT
+    );
+    if (rc != SQLITE_OK) {
+        throw_sqlite_error(sqlite3_db_handle(stmt_), "bind_blob failed");
+    }
+}
+
 void SqliteStatement::bind_null(int index) {
     const int rc = sqlite3_bind_null(stmt_, index);
     if (rc != SQLITE_OK) {
@@ -117,6 +132,18 @@ std::int64_t SqliteStatement::column_int64(int column) const {
 
 double SqliteStatement::column_double(int column) const {
     return sqlite3_column_double(stmt_, column);
+}
+
+std::vector<std::uint8_t> SqliteStatement::column_blob(int column) const {
+    const auto* blob = static_cast<const std::uint8_t*>(sqlite3_column_blob(stmt_, column));
+    const int blob_size = sqlite3_column_bytes(stmt_, column);
+    if (blob == nullptr || blob_size <= 0) {
+        return {};
+    }
+
+    std::vector<std::uint8_t> out(static_cast<std::size_t>(blob_size));
+    std::memcpy(out.data(), blob, static_cast<std::size_t>(blob_size));
+    return out;
 }
 
 bool SqliteStatement::column_is_null(int column) const {

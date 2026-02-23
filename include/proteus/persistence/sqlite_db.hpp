@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace proteus::persistence {
 
@@ -21,6 +22,7 @@ public:
     void bind_text(int index, const std::string& value);
     void bind_int64(int index, std::int64_t value);
     void bind_double(int index, double value);
+    void bind_blob(int index, const std::vector<std::uint8_t>& value);
     void bind_null(int index);
 
     bool step();
@@ -29,6 +31,7 @@ public:
     std::string column_text(int column) const;
     std::int64_t column_int64(int column) const;
     double column_double(int column) const;
+    std::vector<std::uint8_t> column_blob(int column) const;
     bool column_is_null(int column) const;
 
     sqlite3_stmt* native_handle() const;
