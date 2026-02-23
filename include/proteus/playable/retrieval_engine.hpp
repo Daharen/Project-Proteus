@@ -11,6 +11,7 @@
 namespace proteus::playable {
 
 inline constexpr const char* kPlayableCorePolicyVersion = "playable_core_v1";
+inline constexpr std::size_t kMinCandidates = 4;
 
 struct RetrievalRequest {
     std::string domain;
@@ -29,11 +30,12 @@ std::string compute_prompt_hash(
 nlohmann::json run_retrieval(
     persistence::SqliteDb& db,
     const RetrievalRequest& request,
-    const ProposalSelector& selector
+    ProposalSelector& selector
 );
 
 void log_reward(
     persistence::SqliteDb& db,
+    ProposalSelector& selector,
     const std::string& session_id,
     const std::string& proposal_id,
     double reward_value

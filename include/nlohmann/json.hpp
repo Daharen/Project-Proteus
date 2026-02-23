@@ -88,6 +88,19 @@ public:
         return std::get<object_t>(value_)[key];
     }
 
+
+    void push_back(const json& value) {
+        if (!is_array()) {
+            value_ = array_t{};
+        }
+        std::get<array_t>(value_).push_back(value);
+    }
+
+    std::size_t size() const {
+        if (is_array()) return std::get<array_t>(value_).size();
+        if (is_object()) return std::get<object_t>(value_).size();
+        return 0;
+    }
     template <typename T>
     T get() const {
         if constexpr (std::is_same_v<T, std::string>) {
@@ -96,6 +109,9 @@ public:
         } else if constexpr (std::is_same_v<T, double>) {
             if (!is_number()) throw std::runtime_error("json is not number");
             return std::get<double>(value_);
+        } else if constexpr (std::is_same_v<T, bool>) {
+            if (!std::holds_alternative<bool>(value_)) throw std::runtime_error("json is not bool");
+            return std::get<bool>(value_);
         } else {
             static_assert(!sizeof(T), "Unsupported json::get type");
         }

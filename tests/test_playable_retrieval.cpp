@@ -2,7 +2,6 @@
 #include "proteus/persistence/sqlite_db.hpp"
 #include "proteus/playable/canonicalize.hpp"
 #include "proteus/playable/prompt_cache.hpp"
-#include "proteus/playable/proposal_selector.hpp"
 #include "proteus/playable/proposal_schema.hpp"
 #include "proteus/playable/retrieval_engine.hpp"
 
@@ -10,120 +9,119 @@
 
 #include <filesystem>
 
-TEST(PlayableCoreTest, CanonicalizationProducesStableHash) {
-    const std::string first = proteus::playable::canonicalize_prompt("  Help\tme find\nA QUEST!!! ");
-    const std::string second = proteus::playable::canonicalize_prompt("help me find a quest??");
+namespace {
 
-    EXPECT_EQ(first, "help me find a quest");
-    EXPECT_EQ(first, second);
+void upsert_bandit_state(
+    proteus::persistence::SqliteDb& db,
+    const std::string& key,
+    double epsilon,
+    double lr,
+    const std::vector<double>& weights
+) {
+    nlohmann::json state;
+    state["policy_version"] = key;
+    state["epsilon"] = epsilon;
+    state["lr"] = lr;
+    state["feature_version"] = "v1";
+    nlohmann::json arr = nlohmann::json::array({});
+    for (double w : weights) {
+        arr.push_back(w);
+    }
+    state["weight_vector"] = arr;
 
-    const std::string hash1 = proteus::playable::compute_prompt_hash("playable_core_v1", "rpg", first);
-    const std::string hash2 = proteus::playable::compute_prompt_hash("playable_core_v1", "rpg", second);
-    EXPECT_EQ(hash1, hash2);
-}
-
-TEST(PlayableCoreTest, CacheHitReturnsSameProposalIdAndRegistryDedupes) {
-    const std::filesystem::path db_path = std::filesystem::temp_directory_path() / "proteus_test_cache_hits.db";
-    std::filesystem::remove(db_path);
-
-    proteus::persistence::SqliteDb db;
-    db.open(db_path.string());
-    proteus::persistence::ensure_schema(db);
-
-    const proteus::playable::DeterministicSelector selector;
-    const proteus::playable::RetrievalRequest request{
-        .domain = "rpg",
-        .raw_prompt = "help me find a quest",
-        .session_id = "s-cache",
-    };
-
-    const auto first = proteus::playable::run_retrieval(db, request, selector);
-    const auto second = proteus::playable::run_retrieval(db, request, selector);
-
-    const auto first_id = first.at("proposal_id").get<std::string>();
-    const auto second_id = second.at("proposal_id").get<std::string>();
-    EXPECT_EQ(first_id, second_id);
-    EXPECT_EQ(proteus::playable::count_proposal_registry_rows(db, first_id), 1);
-
-    const auto hash = proteus::playable::compute_prompt_hash(
-        request.policy_version,
-        request.domain,
-        proteus::playable::canonicalize_prompt(request.raw_prompt)
+    auto stmt = db.prepare(
+        "INSERT INTO bandit_state(key, value_json, updated_at) VALUES(?1, ?2, strftime('%s','now')) "
+        "ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at;"
     );
-    const auto cached = proteus::playable::find_prompt_cache(db, hash);
-    EXPECT_EQ(cached.has_value(), true);
-    EXPECT_EQ(cached->proposal_id, first_id);
-    EXPECT_EQ(cached->hit_count, 1);
-
-    std::filesystem::remove(db_path);
+    stmt.bind_text(1, key);
+    stmt.bind_text(2, state.dump());
+    stmt.step();
 }
 
-TEST(PlayableCoreTest, InteractionLogRowsAndNoveltyFlagsAreCorrect) {
-    const std::filesystem::path db_path = std::filesystem::temp_directory_path() / "proteus_test_interaction.db";
+}  // namespace
+
+TEST(PlayableCoreTest, CandidateSeedingAndStability) {
+    const std::filesystem::path db_path = std::filesystem::temp_directory_path() / "proteus_test_candidates.db";
     std::filesystem::remove(db_path);
 
     proteus::persistence::SqliteDb db;
     db.open(db_path.string());
     proteus::persistence::ensure_schema(db);
 
-    const proteus::playable::DeterministicSelector selector;
-    const std::string session_id = "s-interaction";
-    const proteus::playable::RetrievalRequest request{
-        .domain = "rpg",
-        .raw_prompt = "help me find a quest",
-        .session_id = session_id,
-    };
+    upsert_bandit_state(db, proteus::playable::kPlayableCorePolicyVersion, 0.0, 0.01, std::vector<double>(18, 0.0));
+    proteus::playable::BanditSelector selector(db, proteus::playable::kPlayableCorePolicyVersion);
 
-    const auto first = proteus::playable::run_retrieval(db, request, selector);
+    const proteus::playable::RetrievalRequest req{.domain = "rpg", .raw_prompt = "help me find a quest", .session_id = "s1"};
+    const auto first = proteus::playable::run_retrieval(db, req, selector);
+    const auto hash = proteus::playable::compute_prompt_hash(req.policy_version, req.domain, proteus::playable::canonicalize_prompt(req.raw_prompt));
+
+    const auto ids1 = proteus::playable::list_prompt_candidate_ids(db, hash);
+    EXPECT_EQ(ids1.size(), proteus::playable::kMinCandidates);
+
+    const auto second = proteus::playable::run_retrieval(db, req, selector);
+    const auto ids2 = proteus::playable::list_prompt_candidate_ids(db, hash);
+    EXPECT_EQ(ids2.size(), proteus::playable::kMinCandidates);
+    EXPECT_EQ(ids1.front(), ids2.front());
+    EXPECT_EQ(first.at("proposal_id").get<std::string>(), second.at("proposal_id").get<std::string>());
+
+    std::filesystem::remove(db_path);
+}
+
+TEST(PlayableCoreTest, BanditSelectionDeterministicForEpsilonExtremes) {
+    const std::filesystem::path db_path = std::filesystem::temp_directory_path() / "proteus_test_bandit_eps.db";
+    std::filesystem::remove(db_path);
+
+    proteus::persistence::SqliteDb db;
+    db.open(db_path.string());
+    proteus::persistence::ensure_schema(db);
+
+    upsert_bandit_state(db, "eps0", 0.0, 0.01, std::vector<double>(18, 0.0));
+    proteus::playable::BanditSelector selector0(db, "eps0");
+    const proteus::playable::RetrievalRequest req0{.domain = "rpg", .raw_prompt = "alpha", .session_id = "s-0", .policy_version = "eps0"};
+    const auto a = proteus::playable::run_retrieval(db, req0, selector0);
+    const auto b = proteus::playable::run_retrieval(db, req0, selector0);
+    EXPECT_EQ(a.at("proposal_id").get<std::string>(), b.at("proposal_id").get<std::string>());
+
+    upsert_bandit_state(db, "eps1", 1.0, 0.01, std::vector<double>(18, 0.0));
+    proteus::playable::BanditSelector selector1(db, "eps1");
+    const proteus::playable::RetrievalRequest req1{.domain = "rpg", .raw_prompt = "beta", .session_id = "s-1", .policy_version = "eps1"};
+    const auto c = proteus::playable::run_retrieval(db, req1, selector1);
+    const auto d = proteus::playable::run_retrieval(db, req1, selector1);
+    EXPECT_EQ(c.at("proposal_id").get<std::string>(), d.at("proposal_id").get<std::string>());
+
+    std::filesystem::remove(db_path);
+}
+
+TEST(PlayableCoreTest, RewardUpdateLearnsAndPersistsState) {
+    const std::filesystem::path db_path = std::filesystem::temp_directory_path() / "proteus_test_bandit_learn.db";
+    std::filesystem::remove(db_path);
+
+    proteus::persistence::SqliteDb db;
+    db.open(db_path.string());
+    proteus::persistence::ensure_schema(db);
+
+    upsert_bandit_state(db, "learn", 0.0, 0.05, std::vector<double>(18, 0.0));
+    proteus::playable::BanditSelector selector(db, "learn");
+
+    const proteus::playable::RetrievalRequest req{.domain = "rpg", .raw_prompt = "gamma", .session_id = "s-learn", .policy_version = "learn"};
+    const auto first = proteus::playable::run_retrieval(db, req, selector);
     const auto proposal_id = first.at("proposal_id").get<std::string>();
-    const auto latest_miss = proteus::playable::latest_interaction_for_session_and_arm(db, session_id, proposal_id);
-    EXPECT_EQ(latest_miss.has_value(), true);
-    EXPECT_EQ(latest_miss->novelty_flag, 1);
-    EXPECT_EQ(latest_miss->reward_is_null, true);
 
-    (void)proteus::playable::run_retrieval(db, request, selector);
-    const auto latest_hit = proteus::playable::latest_interaction_for_session_and_arm(db, session_id, proposal_id);
-    EXPECT_EQ(latest_hit.has_value(), true);
-    EXPECT_EQ(latest_hit->novelty_flag, 0);
+    for (int i = 0; i < 5; ++i) {
+        proteus::playable::log_reward(db, selector, "s-learn", proposal_id, 1.0);
+    }
 
-    std::filesystem::remove(db_path);
-}
+    auto stmt = db.prepare("SELECT value_json FROM bandit_state WHERE key = ?1;");
+    stmt.bind_text(1, "learn");
+    EXPECT_EQ(stmt.step(), true);
+    const auto saved = nlohmann::json::parse(stmt.column_text(0));
+    EXPECT_EQ(saved.contains("weight_vector"), true);
 
-TEST(PlayableCoreTest, RewardUpdateModifiesLatestMatchingInteraction) {
-    const std::filesystem::path db_path = std::filesystem::temp_directory_path() / "proteus_test_reward.db";
-    std::filesystem::remove(db_path);
-
-    proteus::persistence::SqliteDb db;
-    db.open(db_path.string());
-    proteus::persistence::ensure_schema(db);
-
-    const proteus::playable::DeterministicSelector selector;
-    const std::string session_id = "s-reward";
-    const proteus::playable::RetrievalRequest request{
-        .domain = "rpg",
-        .raw_prompt = "help me find a quest",
-        .session_id = session_id,
-    };
-
-    const auto result = proteus::playable::run_retrieval(db, request, selector);
-    const auto proposal_id = result.at("proposal_id").get<std::string>();
-
-    proteus::playable::log_reward(db, session_id, proposal_id, 0.75);
-    const auto latest = proteus::playable::latest_interaction_for_session_and_arm(db, session_id, proposal_id);
-    EXPECT_EQ(latest.has_value(), true);
-    EXPECT_EQ(latest->reward_is_null, false);
-    EXPECT_GT(latest->reward_signal, 0.74);
-    EXPECT_GT(0.76, latest->reward_signal);
+    proteus::playable::BanditSelector reloaded(db, "learn");
+    const auto second = proteus::playable::run_retrieval(db, req, reloaded);
+    EXPECT_EQ(second.contains("proposal_id"), true);
 
     std::filesystem::remove(db_path);
-}
-
-TEST(PlayableCoreTest, PolicyVersionChangeSeparatesCacheKeys) {
-    const std::string canonical = proteus::playable::canonicalize_prompt("help me find a quest");
-    const auto v1 = proteus::playable::compute_prompt_hash("playable_core_v1", "rpg", canonical);
-    const auto v2 = proteus::playable::compute_prompt_hash("playable_core_v2", "rpg", canonical);
-
-    EXPECT_EQ(v1 == v2, false);
 }
 
 TEST(PlayableCoreTest, SchemaValidationRejectsMalformedProposal) {

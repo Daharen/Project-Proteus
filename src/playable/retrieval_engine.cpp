@@ -9,6 +9,7 @@
 #include <array>
 #include <chrono>
 #include <iomanip>
+#include <random>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
@@ -34,32 +35,6 @@ std::string sha256_hex(std::string_view value) {
     return out.str();
 }
 
-Proposal procedural_generate(const std::string& prompt_hash, const std::string& domain) {
-    static constexpr std::array<const char*, 4> kQuestVariants = {
-        "A local magistrate needs discreet help recovering a stolen ledger.",
-        "A wandering alchemist seeks an escort through haunted wetlands.",
-        "A guild courier vanished on the mountain pass with urgent treaties.",
-        "A village elder asks you to uncover why sacred wells have gone silent.",
-    };
-
-    const std::size_t pick = static_cast<std::size_t>(std::stoull(prompt_hash.substr(0, 8), nullptr, 16) % kQuestVariants.size());
-
-    nlohmann::json payload;
-    payload["proposal_id"] = prompt_hash;
-    payload["domain"] = domain;
-    payload["type"] = "quest_variant";
-    payload["text"] = kQuestVariants[pick];
-    payload["tags"] = nlohmann::json::array({"procedural", "deterministic"});
-    payload["axis_bias"] = nlohmann::json{{"novelty", 0.25}, {"complexity", 0.1}};
-
-    return Proposal{
-        .proposal_id = prompt_hash,
-        .domain = domain,
-        .source = "procedural",
-        .payload = payload,
-    };
-}
-
 std::string serialize_player_context(const bandits::PlayerContext& context) {
     nlohmann::json player;
     player["identity_confidence"] = context.identity_confidence;
@@ -69,6 +44,75 @@ std::string serialize_player_context(const bandits::PlayerContext& context) {
     player["session_id"] = static_cast<double>(context.session_id);
     player["niche_id"] = static_cast<double>(context.niche_id);
     return player.dump();
+}
+
+std::string serialize_features(const std::vector<double>& features) {
+    nlohmann::json arr = nlohmann::json::array({});
+    for (double v : features) {
+        arr.push_back(v);
+    }
+    return arr.dump();
+}
+
+std::vector<double> parse_features_json(const std::string& text) {
+    std::vector<double> out;
+    if (text.empty()) {
+        return out;
+    }
+    const auto arr = nlohmann::json::parse(text);
+    if (!arr.is_array()) {
+        return out;
+    }
+    for (const auto& v : arr) {
+        if (v.is_number()) {
+            out.push_back(v.get<double>());
+        }
+    }
+    return out;
+}
+
+std::vector<Proposal> generate_candidates(
+    const std::string& prompt_hash,
+    const std::string& canonical_prompt,
+    const std::string& domain,
+    std::size_t k
+) {
+    static constexpr std::array<const char*, 4> kTypes = {
+        "quest_variant", "dialog_variant", "lore_hook", "challenge_hook"
+    };
+    static constexpr std::array<const char*, 4> kTones = {
+        "grim", "hopeful", "comedic", "mysterious"
+    };
+
+    std::vector<Proposal> out;
+    out.reserve(k);
+
+    for (std::size_t i = 0; i < k; ++i) {
+        const std::string seed_str = sha256_hex(prompt_hash + "|seed|" + std::to_string(i));
+        std::mt19937_64 rng(static_cast<std::mt19937_64::result_type>(std::stoull(seed_str.substr(0, 16), nullptr, 16)));
+        std::uniform_real_distribution<double> bias_dist(-0.8, 0.8);
+
+        const std::string proposal_id = sha256_hex(prompt_hash + "|proposal|" + std::to_string(i));
+        const std::string type = kTypes[i % kTypes.size()];
+        const std::string tone = kTones[(i + 1) % kTones.size()];
+
+        nlohmann::json payload;
+        payload["proposal_id"] = proposal_id;
+        payload["domain"] = domain;
+        payload["type"] = type;
+        payload["text"] = "[" + tone + "] " + canonical_prompt + " -> " + type + " #" + std::to_string(i + 1);
+        payload["tags"] = nlohmann::json::array({"procedural", tone});
+        payload["axis_bias"] = nlohmann::json{{"novelty", bias_dist(rng)}, {"complexity", bias_dist(rng)}};
+
+        out.push_back(Proposal{
+            .proposal_id = proposal_id,
+            .domain = domain,
+            .source = "procedural_seeded",
+            .payload = payload,
+        });
+    }
+
+    return out;
 }
 
 }  // namespace
@@ -84,45 +128,25 @@ std::string compute_prompt_hash(
 nlohmann::json run_retrieval(
     persistence::SqliteDb& db,
     const RetrievalRequest& request,
-    const ProposalSelector& selector
+    ProposalSelector& selector
 ) {
     const std::string canonical_prompt = canonicalize_prompt(request.raw_prompt);
     const std::string prompt_hash = compute_prompt_hash(request.policy_version, request.domain, canonical_prompt);
     const std::int64_t now = unix_timestamp_now();
 
-    Proposal proposal;
     bool cache_hit = false;
-
     if (auto cached = find_prompt_cache(db, prompt_hash)) {
-        mark_prompt_cache_hit(db, prompt_hash, now);
-        proposal = Proposal{
-            .proposal_id = cached->proposal_id,
-            .domain = cached->domain,
-            .source = "cache",
-            .payload = load_proposal_json(db, cached->proposal_id),
-        };
+        (void)cached;
         cache_hit = true;
+        mark_prompt_cache_hit(db, prompt_hash, now);
     } else {
-        proposal = procedural_generate(prompt_hash, request.domain);
-        const ValidationReport report = validate_proposal_json(proposal.payload);
-        if (!report.ok) {
-            std::ostringstream errors;
-            errors << "Proposal validation failed:";
-            for (const auto& issue : report.issues) {
-                errors << " " << issue << ";";
-            }
-            throw std::runtime_error(errors.str());
-        }
-
         persistence::SqliteTransaction tx(db);
-        upsert_proposal_registry(db, proposal.proposal_id, proposal.domain, proposal.payload, proposal.source, now);
         insert_prompt_cache(
             db,
             PromptCacheRecord{
                 .prompt_hash = prompt_hash,
                 .domain = request.domain,
                 .canonical_prompt = canonical_prompt,
-                .proposal_id = proposal.proposal_id,
                 .model_id = "",
                 .policy_version = request.policy_version,
                 .created_at = now,
@@ -133,9 +157,57 @@ nlohmann::json run_retrieval(
         tx.commit();
     }
 
-    const std::vector<Proposal> candidates = {proposal};
-    const std::string selected_id = selector.select(candidates, request.player_context, request.domain);
-    if (selected_id != proposal.proposal_id) {
+    auto candidate_ids = list_prompt_candidate_ids(db, prompt_hash);
+    if (candidate_ids.empty() || candidate_ids.size() < kMinCandidates) {
+        const std::size_t to_generate = kMinCandidates - candidate_ids.size();
+        const auto generated = generate_candidates(prompt_hash, canonical_prompt, request.domain, kMinCandidates);
+        persistence::SqliteTransaction tx(db);
+        std::size_t added = 0;
+        for (const auto& proposal : generated) {
+            if (added >= to_generate) {
+                break;
+            }
+            const ValidationReport report = validate_proposal_json(proposal.payload);
+            if (!report.ok) {
+                throw std::runtime_error("Generated proposal failed schema validation");
+            }
+            upsert_proposal_registry(db, proposal.proposal_id, proposal.domain, proposal.payload, proposal.source, now);
+            insert_prompt_candidate(
+                db,
+                PromptCandidateRecord{
+                    .prompt_hash = prompt_hash,
+                    .proposal_id = proposal.proposal_id,
+                    .weight = 1.0,
+                    .created_at = now,
+                }
+            );
+            ++added;
+        }
+        tx.commit();
+        candidate_ids = list_prompt_candidate_ids(db, prompt_hash);
+    }
+
+    if (candidate_ids.empty()) {
+        throw std::runtime_error("No prompt candidates available for prompt_hash: " + prompt_hash);
+    }
+
+    std::vector<Proposal> candidates;
+    for (const auto& id : candidate_ids) {
+        candidates.push_back(load_proposal(db, id));
+    }
+
+    const SelectionDecision decision = selector.select(candidates, request.player_context, request.domain, prompt_hash, request.session_id);
+
+    Proposal selected;
+    bool found = false;
+    for (const auto& c : candidates) {
+        if (c.proposal_id == decision.proposal_id) {
+            selected = c;
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
         throw std::runtime_error("Selected proposal_id not found in candidates");
     }
 
@@ -145,24 +217,33 @@ nlohmann::json run_retrieval(
             .session_id = request.session_id,
             .prompt_hash = prompt_hash,
             .player_context_json = serialize_player_context(request.player_context),
-            .chosen_arm = selected_id,
+            .chosen_arm = selected.proposal_id,
             .novelty_flag = cache_hit ? 0 : 1,
             .reward_signal = 0.0,
             .reward_is_null = true,
+            .selection_seed = decision.selection_seed,
+            .decision_features_json = serialize_features(decision.decision_features),
             .timestamp = now,
         }
     );
 
-    return proposal.payload;
+    return selected.payload;
 }
 
 void log_reward(
     persistence::SqliteDb& db,
+    ProposalSelector& selector,
     const std::string& session_id,
     const std::string& proposal_id,
     double reward_value
 ) {
     log_reward_interaction(db, session_id, proposal_id, reward_value);
+    const auto interaction = latest_interaction_for_session_and_arm(db, session_id, proposal_id);
+    if (!interaction.has_value()) {
+        return;
+    }
+    const auto features = parse_features_json(interaction->decision_features_json);
+    selector.update_with_reward(features, reward_value);
 }
 
 }  // namespace proteus::playable

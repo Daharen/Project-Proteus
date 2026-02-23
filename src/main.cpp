@@ -15,7 +15,10 @@ struct CliArgs {
     std::string domain;
     std::string prompt;
     std::string session_id;
+    std::string proposal_id;
     std::string db_path = "./proteus.db";
+    double reward = -1.0;
+    bool reward_mode = false;
 };
 
 std::string generate_session_uuid() {
@@ -61,15 +64,37 @@ CliArgs parse_args(int argc, char** argv) {
             args.session_id = argv[++i];
             continue;
         }
+        if (current == "--proposal_id" && i + 1 < argc) {
+            args.proposal_id = argv[++i];
+            continue;
+        }
+        if (current == "--reward" && i + 1 < argc) {
+            args.reward = std::stod(argv[++i]);
+            args.reward_mode = true;
+            continue;
+        }
         throw std::runtime_error("Unknown or incomplete argument: " + current);
-    }
-
-    if (args.domain.empty() || args.prompt.empty()) {
-        throw std::runtime_error("Usage: proteus --domain <domain> --prompt <prompt> [--db <path>] [--session <id>]");
     }
 
     if (args.session_id.empty()) {
         args.session_id = generate_session_uuid();
+    }
+
+    if (args.reward_mode) {
+        if (args.proposal_id.empty()) {
+            throw std::runtime_error("Reward mode requires --proposal_id");
+        }
+        if (args.reward < 0.0 || args.reward > 5.0) {
+            throw std::runtime_error("Reward must be in [0,1] or [1,5]");
+        }
+        if (args.reward > 1.0) {
+            args.reward = (args.reward - 1.0) / 4.0;
+        }
+        return args;
+    }
+
+    if (args.domain.empty() || args.prompt.empty()) {
+        throw std::runtime_error("Usage: proteus --domain <domain> --prompt <prompt> [--db <path>] [--session <id>]");
     }
 
     return args;
@@ -84,8 +109,14 @@ int main(int argc, char** argv) {
         proteus::persistence::SqliteDb db;
         db.open(args.db_path);
         proteus::persistence::ensure_schema(db);
+        proteus::playable::BanditSelector selector(db, proteus::playable::kPlayableCorePolicyVersion);
 
-        const proteus::playable::DeterministicSelector selector;
+        if (args.reward_mode) {
+            proteus::playable::log_reward(db, selector, args.session_id, args.proposal_id, args.reward);
+            std::cout << "{\"ok\":true}\n";
+            return 0;
+        }
+
         auto response = proteus::playable::run_retrieval(
             db,
             proteus::playable::RetrievalRequest{

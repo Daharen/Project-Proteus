@@ -20,6 +20,7 @@ add_library(proteus_core
     src/playable/canonicalize.cpp
     src/playable/prompt_cache.cpp
     src/playable/proposal_schema.cpp
+    src/playable/feature_extractor.cpp
     src/playable/proposal_selector.cpp
     src/playable/retrieval_engine.cpp
 )
