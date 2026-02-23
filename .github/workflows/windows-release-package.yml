@@ -56,6 +56,13 @@ jobs:
           $short = "${{ github.sha }}".Substring(0,8)
           "SHORT_SHA=$short" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
+
+      - name: Sanitize ref name for artifact
+        shell: pwsh
+        run: |
+          $safeRef = "${{ github.ref_name }}" -replace '[\\/]', '-'
+          "SAFE_REF_NAME=$safeRef" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Package runtime
         shell: pwsh
         run: |
@@ -73,5 +80,5 @@ jobs:
       - name: Upload package artifact
         uses: actions/upload-artifact@v4
         with:
-          name: proteus-${{ github.ref_name }}-${{ env.SHORT_SHA }}
+          name: proteus-${{ env.SAFE_REF_NAME }}-${{ env.SHORT_SHA }}
           path: proteus-windows-release.zip
