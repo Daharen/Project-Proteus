@@ -12,6 +12,7 @@ struct HttpServerConfig {
     bool dev_mode = false;
     bool self_test_mode = false;
     bool smoke_mode = false;
+    bool verbose = false;
 };
 
 int run_server(const HttpServerConfig& config);

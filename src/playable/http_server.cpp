@@ -751,7 +751,7 @@ int run_server(const HttpServerConfig& input_config) {
               << "  cwd=" << cwd.string() << "\n";
 
     persistence::SqliteDb db;
-    persistence::open_and_migrate(db, config.db_path);
+    persistence::open_and_migrate(db, config.db_path, config.verbose);
 
     httplib::Server svr;
     svr.set_payload_max_length(kMaxBodyBytes);

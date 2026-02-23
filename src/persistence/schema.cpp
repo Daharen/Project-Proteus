@@ -1,6 +1,8 @@
 #include "proteus/persistence/schema.hpp"
 
+#include <cstdlib>
 #include <filesystem>
+#include <iostream>
 #include <stdexcept>
 #include <string>
 
@@ -215,6 +217,24 @@ void migrate_6_to_7(SqliteDb& db) {
     db.exec("CREATE INDEX IF NOT EXISTS idx_interaction_log_query_id ON interaction_log(query_id);");
 }
 
+
+void verify_sqlite_capabilities(SqliteDb& db, bool verbose) {
+    auto fts_stmt = db.prepare("SELECT sqlite_compileoption_used('ENABLE_FTS5');");
+    if (!fts_stmt.step() || fts_stmt.column_int64(0) == 0) {
+        throw std::runtime_error("SQLite build missing ENABLE_FTS5 (required)");
+    }
+
+    const bool log_opts = verbose || (std::getenv("PROTEUS_LOG_SQLITE_OPTS") != nullptr);
+    if (!log_opts) {
+        return;
+    }
+
+    auto opt_stmt = db.prepare("PRAGMA compile_options;");
+    std::cerr << "[sqlite] compile_options:" << std::endl;
+    while (opt_stmt.step()) {
+        std::cerr << "  - " << opt_stmt.column_text(0) << std::endl;
+    }
+}
 void apply_migration(SqliteDb& db, int from_version) {
     switch (from_version) {
         case 0: migrate_0_to_1(db); return;
@@ -247,8 +267,9 @@ void ensure_schema(SqliteDb& db) {
     tx.commit();
 }
 
-void open_and_migrate(SqliteDb& db, const std::string& db_path) {
+void open_and_migrate(SqliteDb& db, const std::string& db_path, bool verbose) {
     db.open(db_path);
+    verify_sqlite_capabilities(db, verbose);
     ensure_schema(db);
 }
 

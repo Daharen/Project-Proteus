@@ -43,6 +43,7 @@ struct CliArgs {
     bool dev_mode = false;
     bool self_test_mode = false;
     bool smoke_mode = false;
+    bool verbose = false;
 };
 
 std::string generate_session_uuid() {
@@ -72,8 +73,8 @@ void print_help() {
         << "Usage:\n"
         << "  proteus --domain <domain> --prompt <prompt> [--db <path>] [--session <id>]\n"
         << "  proteus --reward <value> --proposal_id <id> [--session <id>] [--db <path>]\n"
-        << "  proteus --migrate [--db <path>]\n"
-        << "  proteus serve [--host 127.0.0.1] [--port 8080] [--db <path>] [--static_root <path>] [--dev] [--smoke]\n"
+        << "  proteus --migrate [--db <path>] [--verbose]\n"
+        << "  proteus serve [--host 127.0.0.1] [--port 8080] [--db <path>] [--static_root <path>] [--dev] [--smoke] [--verbose]\n"
         << "  proteus query --db <path> --text \"<raw>\" [--top 5] [--min_score 0.2]\n"
         << "\n"
         << "Modes:\n"
@@ -94,6 +95,7 @@ void print_serve_help() {
         << "  --static_root <path>    Static web root (default auto-detected repo web/)\n"
         << "  --dev                   Enable dev endpoints\n"
         << "  --smoke                 Bind/listen probe, print SMOKE_OK, then shutdown\n"
+        << "  --verbose               Log SQLite compile options at startup\n"
         << "  --help                  Show serve help\n";
 }
 
@@ -181,6 +183,10 @@ CliArgs parse_args(int argc, char** argv) {
             args.mode = CliMode::Serve;
             continue;
         }
+        if (current == "--verbose") {
+            args.verbose = true;
+            continue;
+        }
         if (current == "--host" && i + 1 < argc) {
             args.host = argv[++i];
             continue;
@@ -266,7 +272,7 @@ int main(int argc, char** argv) {
 
         if (args.mode == CliMode::Migrate) {
             proteus::persistence::SqliteDb db;
-            proteus::persistence::open_and_migrate(db, args.db_path);
+            proteus::persistence::open_and_migrate(db, args.db_path, args.verbose);
             std::cout << "MIGRATE_OK version=" << proteus::persistence::kSchemaVersion << "\n";
             return 0;
         }
@@ -280,11 +286,12 @@ int main(int argc, char** argv) {
                 .dev_mode = args.dev_mode,
                 .self_test_mode = args.self_test_mode,
                 .smoke_mode = args.smoke_mode,
+                .verbose = args.verbose,
             });
         }
 
         proteus::persistence::SqliteDb db;
-        proteus::persistence::open_and_migrate(db, args.db_path);
+        proteus::persistence::open_and_migrate(db, args.db_path, args.verbose);
 
         if (args.mode == CliMode::QueryResolve) {
             const auto resolved = proteus::query::ResolveQuery(db, args.query_text, args.query_top, args.min_score);

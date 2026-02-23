@@ -26,7 +26,7 @@ jobs:
       - name: Install vcpkg dependencies
         shell: pwsh
         run: |
-          & "$env:VCPKG_ROOT\\vcpkg.exe" install sqlite3:$env:VCPKG_DEFAULT_TRIPLET openssl:$env:VCPKG_DEFAULT_TRIPLET
+          & "$env:VCPKG_ROOT\\vcpkg.exe" install openssl:$env:VCPKG_DEFAULT_TRIPLET
 
       - name: Verify vcpkg packages
         shell: pwsh
@@ -34,9 +34,6 @@ jobs:
           Write-Host "VCPKG_ROOT=$env:VCPKG_ROOT"
           $installed = & "$env:VCPKG_ROOT\\vcpkg.exe" list
           $installed
-          if (-not ($installed | Select-String -Pattern "^sqlite3:x64-windows")) {
-            throw "sqlite3:x64-windows not found in vcpkg installed package list"
-          }
 
       - name: Configure (VS2022 x64)
         run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\\scripts\\buildsystems\\vcpkg.cmake" -DVCPKG_TARGET_TRIPLET="$env:VCPKG_DEFAULT_TRIPLET"
