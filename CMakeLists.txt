@@ -18,6 +18,8 @@ add_library(proteus_core
     src/content/in_memory_graph.cpp
     src/persistence/sqlite_db.cpp
     src/persistence/schema.cpp
+    src/math/deterministic_math.cpp
+    src/analytics/behavior_aggregation.cpp
     src/playable/canonicalize.cpp
     src/playable/prompt_cache.cpp
     src/playable/proposal_schema.cpp
@@ -53,6 +55,7 @@ add_executable(proteus_tests
     tests/test_identity_inference.cpp
     tests/test_playable_retrieval.cpp
     tests/test_query_identity.cpp
+    tests/test_behavior_aggregation_determinism.cpp
 )
 target_include_directories(proteus_tests PRIVATE tests/third_party)
 target_link_libraries(proteus_tests PRIVATE proteus_core)

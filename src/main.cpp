@@ -1,3 +1,4 @@
+#include "proteus/analytics/behavior_aggregation.h"
 #include "proteus/persistence/schema.hpp"
 #include "proteus/persistence/sqlite_db.hpp"
 #include "proteus/playable/http_server.hpp"
@@ -6,8 +7,12 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdio>
+#include <cstdint>
+#include <cstring>
 #include <iostream>
+#include <vector>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -21,6 +26,9 @@ enum class CliMode {
     Serve,
     Migrate,
     QueryResolve,
+    RecomputeAggregates,
+    InspectCluster,
+    InspectPlayer,
     Help,
 };
 
@@ -44,6 +52,10 @@ struct CliArgs {
     bool self_test_mode = false;
     bool smoke_mode = false;
     bool verbose = false;
+    std::int64_t now_unix_seconds = -1;
+    int rounding_decimals = 9;
+    std::int64_t inspect_query_id = -1;
+    std::string inspect_player_id;
 };
 
 std::string generate_session_uuid() {
@@ -199,6 +211,28 @@ CliArgs parse_args(int argc, char** argv) {
             args.static_dir = argv[++i];
             continue;
         }
+        if (current == "--recompute-aggregates") {
+            args.mode = CliMode::RecomputeAggregates;
+            continue;
+        }
+        if (current == "--inspect-cluster" && i + 1 < argc) {
+            args.mode = CliMode::InspectCluster;
+            args.inspect_query_id = std::stoll(argv[++i]);
+            continue;
+        }
+        if (current == "--inspect-player" && i + 1 < argc) {
+            args.mode = CliMode::InspectPlayer;
+            args.inspect_player_id = argv[++i];
+            continue;
+        }
+        if (current == "--now" && i + 1 < argc) {
+            args.now_unix_seconds = std::stoll(argv[++i]);
+            continue;
+        }
+        if (current == "--rounding_decimals" && i + 1 < argc) {
+            args.rounding_decimals = std::stoi(argv[++i]);
+            continue;
+        }
         throw std::runtime_error("Unknown or incomplete argument: " + current);
     }
 
@@ -207,6 +241,25 @@ CliArgs parse_args(int argc, char** argv) {
     }
 
     if (args.mode == CliMode::Migrate) {
+        return args;
+    }
+
+    if (args.mode == CliMode::RecomputeAggregates) {
+        return args;
+    }
+
+    if (args.mode == CliMode::InspectCluster) {
+        if (args.inspect_query_id < 0) {
+            throw std::runtime_error("--inspect-cluster requires non-negative query_id");
+        }
+        return args;
+    }
+
+    if (args.mode == CliMode::InspectPlayer) {
+        if (args.inspect_player_id.empty()) {
+            throw std::runtime_error("--inspect-player requires stable_player_id");
+        }
+        args.query_top = std::max(1, std::min(args.query_top, 100));
         return args;
     }
 
@@ -254,6 +307,29 @@ CliArgs parse_args(int argc, char** argv) {
     return args;
 }
 
+
+std::int64_t unix_timestamp_now() {
+    using namespace std::chrono;
+    return duration_cast<seconds>(system_clock::now().time_since_epoch()).count();
+}
+
+std::vector<double> DecodeLittleEndianDoubles(const std::vector<std::uint8_t>& blob, std::size_t expected_dims) {
+    if (blob.size() != expected_dims * sizeof(double)) {
+        throw std::runtime_error("player_preference_vector blob size mismatch");
+    }
+
+    std::vector<double> out(expected_dims, 0.0);
+    for (std::size_t i = 0; i < expected_dims; ++i) {
+        std::array<std::uint8_t, sizeof(double)> bytes{};
+        std::memcpy(bytes.data(), blob.data() + i * sizeof(double), sizeof(double));
+#if __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
+        std::reverse(bytes.begin(), bytes.end());
+#endif
+        std::memcpy(&out[i], bytes.data(), sizeof(double));
+    }
+    return out;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -292,6 +368,98 @@ int main(int argc, char** argv) {
 
         proteus::persistence::SqliteDb db;
         proteus::persistence::open_and_migrate(db, args.db_path, args.verbose);
+
+        if (args.mode == CliMode::RecomputeAggregates) {
+            const std::int64_t now = args.now_unix_seconds >= 0 ? args.now_unix_seconds : unix_timestamp_now();
+            const proteus::analytics::RecomputeAggregatesOptions opt{
+                .now_unix_seconds = now,
+                .rounding_decimals = args.rounding_decimals,
+            };
+            const bool ok = proteus::analytics::RecomputeBehaviorAggregatesDeterministic(db, opt);
+            if (!ok) {
+                throw std::runtime_error("recompute aggregates failed");
+            }
+            std::cout << "RECOMPUTE_OK rounding_decimals=" << opt.rounding_decimals << " now=" << opt.now_unix_seconds << "\n";
+            return 0;
+        }
+
+        if (args.mode == CliMode::InspectCluster) {
+            auto stats_stmt = db.prepare(
+                "SELECT distinct_players, total_interactions, mean_final_score, entropy_score, divergence_index "
+                "FROM query_cluster_stats WHERE query_id=?1;"
+            );
+            stats_stmt.bind_int64(1, args.inspect_query_id);
+            if (!stats_stmt.step()) {
+                throw std::runtime_error("cluster not found");
+            }
+            const auto distinct_players = stats_stmt.column_int64(0);
+            const auto total_interactions = stats_stmt.column_int64(1);
+            const double mean_final = stats_stmt.column_double(2);
+            const double entropy = stats_stmt.column_double(3);
+            const double divergence = stats_stmt.column_double(4);
+
+            std::cout << "cluster query_id=" << args.inspect_query_id
+                      << " distinct_players=" << distinct_players
+                      << " total_interactions=" << total_interactions
+                      << " mean_final_score=" << mean_final
+                      << " entropy_score=" << entropy
+                      << " divergence_index=" << divergence << "\n";
+
+            auto top_stmt = db.prepare(
+                "SELECT stable_player_id, mean_final_score FROM query_player_aggregate "
+                "WHERE query_id=?1 ORDER BY ABS(mean_final_score - ?2) DESC, stable_player_id ASC LIMIT 10;"
+            );
+            top_stmt.bind_int64(1, args.inspect_query_id);
+            top_stmt.bind_double(2, mean_final);
+            while (top_stmt.step()) {
+                std::cout << "  player=" << top_stmt.column_text(0) << " mean_final_score=" << top_stmt.column_double(1) << "\n";
+            }
+            return 0;
+        }
+
+        if (args.mode == CliMode::InspectPlayer) {
+            auto query_ids_stmt = db.prepare("SELECT query_id FROM query_cluster_stats ORDER BY query_id ASC;");
+            std::vector<std::int64_t> query_ids;
+            while (query_ids_stmt.step()) {
+                query_ids.push_back(query_ids_stmt.column_int64(0));
+            }
+
+            auto player_stmt = db.prepare(
+                "SELECT vector_blob, dimensionality FROM player_preference_vector WHERE stable_player_id=?1;"
+            );
+            player_stmt.bind_text(1, args.inspect_player_id);
+            if (!player_stmt.step()) {
+                throw std::runtime_error("player preference vector not found");
+            }
+
+            const auto blob = player_stmt.column_blob(0);
+            const auto dims = static_cast<std::size_t>(player_stmt.column_int64(1));
+            auto decoded = DecodeLittleEndianDoubles(blob, dims);
+
+            struct Item { std::int64_t query_id; double value; };
+            std::vector<Item> values;
+            const std::size_t count = std::min(query_ids.size(), decoded.size());
+            values.reserve(count);
+            for (std::size_t i = 0; i < count; ++i) {
+                values.push_back(Item{query_ids[i], decoded[i]});
+            }
+
+            std::stable_sort(values.begin(), values.end(), [](const Item& a, const Item& b) {
+                const double aa = std::abs(a.value);
+                const double bb = std::abs(b.value);
+                if (aa != bb) {
+                    return aa > bb;
+                }
+                return a.query_id < b.query_id;
+            });
+
+            const std::size_t top_n = std::min<std::size_t>(static_cast<std::size_t>(args.query_top), values.size());
+            std::cout << "player=" << args.inspect_player_id << " top_dimensions=" << top_n << "\n";
+            for (std::size_t i = 0; i < top_n; ++i) {
+                std::cout << "  query_id=" << values[i].query_id << " value=" << values[i].value << "\n";
+            }
+            return 0;
+        }
 
         if (args.mode == CliMode::QueryResolve) {
             const auto resolved = proteus::query::ResolveQuery(db, args.query_text, args.query_top, args.min_score);
