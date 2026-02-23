@@ -4,6 +4,7 @@
 #include "proteus/playable/http_server.hpp"
 #include "proteus/playable/retrieval_engine.hpp"
 #include "proteus/query/query_identity.hpp"
+#include "proteus/responders/responder_manager.h"
 
 #include <algorithm>
 #include <array>
@@ -463,11 +464,35 @@ int main(int argc, char** argv) {
 
         if (args.mode == CliMode::QueryResolve) {
             const auto resolved = proteus::query::ResolveQuery(db, args.query_text, args.query_top, args.min_score);
+            const std::string stable_player_id = args.session_id.empty() ? "query-cli" : args.session_id;
+            const proteus::responders::ResponderContext responder_context{
+                .query_id = resolved.query_id,
+                .stable_player_id = stable_player_id,
+                .raw_query_text = args.query_text,
+                .query_hash64 = resolved.hash64,
+                .stable_run_seed64 = resolved.hash64,
+                .build_version_tag = 1,
+            };
+            proteus::responders::ResponderManager responder_manager;
+            const auto envelope = responder_manager.ProduceValidatedEnvelope(
+                responder_context,
+                proteus::responders::ResponderKind::DeterministicStub
+            );
+
+            std::cerr << "responder_summary query_id=" << envelope.query_id
+                      << " player=" << envelope.stable_player_id
+                      << " hash64=" << envelope.response_hash64
+                      << " canonical=" << proteus::responders::CanonicalizeEnvelopeForHash(envelope)
+                      << '\n';
+            if (!envelope.debug_note.empty()) {
+                std::cerr << "responder_fallback " << envelope.debug_note << '\n';
+            }
+
             nlohmann::json similar = nlohmann::json::array({});
             for (const auto& item : resolved.similar) {
                 similar.push_back(nlohmann::json{{"query_id", static_cast<double>(item.query_id)}, {"score", item.score}});
             }
-            std::cout << nlohmann::json{{"normalized", resolved.normalized}, {"hash64", std::to_string(resolved.hash64)}, {"query_id", static_cast<double>(resolved.query_id)}, {"similar", similar}}.dump(2) << '\n';
+            std::cout << nlohmann::json{{"normalized", resolved.normalized}, {"hash64", std::to_string(resolved.hash64)}, {"query_id", static_cast<double>(resolved.query_id)}, {"similar", similar}, {"response_hash64", std::to_string(envelope.response_hash64)}}.dump(2) << '\n';
             return 0;
         }
 

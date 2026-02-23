@@ -30,12 +30,17 @@ add_library(proteus_core
     src/playable/retrieval_engine.cpp
     src/playable/http_server.cpp
     src/query/query_identity.cpp
+    src/proteus/responders/response_envelope.cpp
+    src/proteus/responders/response_validation.cpp
+    src/proteus/responders/responder_manager.cpp
+    src/proteus/responders/deterministic_stub_responder.cpp
 )
 
 target_include_directories(proteus_core
     PUBLIC
         third_party/sqlite
         include
+        src
 )
 
 target_link_libraries(proteus_core PUBLIC proteus_sqlite OpenSSL::Crypto)
@@ -56,6 +61,9 @@ add_executable(proteus_tests
     tests/test_playable_retrieval.cpp
     tests/test_query_identity.cpp
     tests/test_behavior_aggregation_determinism.cpp
+    tests/responders/test_response_envelope.cpp
+    tests/responders/test_response_validation.cpp
+    tests/integration/test_responder_rerun_stability.cpp
 )
 target_include_directories(proteus_tests PRIVATE tests/third_party)
 target_link_libraries(proteus_tests PRIVATE proteus_core)
