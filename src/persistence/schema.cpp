@@ -285,6 +285,52 @@ void migrate_7_to_8(SqliteDb& db) {
 }
 
 
+
+void migrate_8_to_9(SqliteDb& db) {
+    db.exec(
+        "CREATE TABLE IF NOT EXISTS llm_response_cache ("
+        "cache_id INTEGER PRIMARY KEY,"
+        "created_at_utc TEXT NOT NULL,"
+        "provider TEXT NOT NULL,"
+        "model TEXT NOT NULL,"
+        "schema_name TEXT NOT NULL,"
+        "schema_version INTEGER NOT NULL,"
+        "prompt_hash BLOB NOT NULL,"
+        "request_json TEXT NOT NULL,"
+        "response_json TEXT NOT NULL,"
+        "response_sha256 BLOB NOT NULL,"
+        "raw_response_text TEXT NOT NULL,"
+        "raw_response_text_trunc TEXT NOT NULL,"
+        "error_code TEXT NULL,"
+        "UNIQUE(provider, model, schema_name, schema_version, prompt_hash)"
+        ");"
+    );
+
+    db.exec(
+        "CREATE TABLE IF NOT EXISTS query_metadata ("
+        "query_id INTEGER PRIMARY KEY,"
+        "normalized_query_text TEXT NOT NULL,"
+        "synopsis TEXT NOT NULL,"
+        "intent_tags_json TEXT NOT NULL,"
+        "schema_version INTEGER NOT NULL"
+        ");"
+    );
+
+    db.exec(
+        "CREATE TABLE IF NOT EXISTS query_bootstrap_proposals ("
+        "query_id INTEGER NOT NULL,"
+        "schema_version INTEGER NOT NULL,"
+        "proposal_index INTEGER NOT NULL,"
+        "proposal_id TEXT NOT NULL,"
+        "proposal_title TEXT NOT NULL,"
+        "proposal_body TEXT NOT NULL,"
+        "choice_seed_hint TEXT NOT NULL,"
+        "risk_profile TEXT NOT NULL,"
+        "PRIMARY KEY(query_id, schema_version, proposal_index)"
+        ");"
+    );
+}
+
 void verify_sqlite_capabilities(SqliteDb& db, bool verbose) {
     auto fts_stmt = db.prepare("SELECT sqlite_compileoption_used('ENABLE_FTS5');");
     if (!fts_stmt.step() || fts_stmt.column_int64(0) == 0) {
@@ -312,6 +358,7 @@ void apply_migration(SqliteDb& db, int from_version) {
         case 5: migrate_5_to_6(db); return;
         case 6: migrate_6_to_7(db); return;
         case 7: migrate_7_to_8(db); return;
+        case 8: migrate_8_to_9(db); return;
         default: throw std::runtime_error("Unsupported schema version: " + std::to_string(from_version));
     }
 }

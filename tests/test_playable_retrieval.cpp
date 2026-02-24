@@ -167,6 +167,159 @@ TEST(PlayableCoreTest, RewardDedupAppliesOnlyOnceAndTracksStats) {
     std::filesystem::remove(db_path);
 }
 
+TEST(PlayableCoreTest, IdenticalQuerySubmissionsAreDedupedPerPlayerAndSession) {
+    const std::filesystem::path db_path = std::filesystem::temp_directory_path() / "proteus_test_query_submit_dedup.db";
+    std::filesystem::remove(db_path);
+
+    {
+        proteus::persistence::SqliteDb db;
+        db.open(db_path.string());
+        proteus::persistence::ensure_schema(db);
+
+        upsert_bandit_state(db, "query-dedup", 0.0, 0.01, std::vector<double>(18, 0.0));
+        proteus::playable::BanditSelector selector(db, "query-dedup");
+
+        const proteus::playable::RetrievalRequest req{
+            .domain = "rpg",
+            .raw_prompt = "where can i find healer herbs",
+            .session_id = "session-identical",
+            .player_context = proteus::bandits::PlayerContext{.stable_player_id = "player_B"},
+            .policy_version = "query-dedup"
+        };
+
+        for (int i = 0; i < 20; ++i) {
+            proteus::playable::run_retrieval(db, req, selector);
+        }
+
+        auto count_stmt = db.prepare("SELECT COUNT(*) FROM interaction_log WHERE stable_player_id = ?1;");
+        count_stmt.bind_text(1, "player_B");
+        ASSERT_EQ(count_stmt.step(), true);
+        EXPECT_EQ(count_stmt.column_int64(0), 1);
+    }
+
+    std::filesystem::remove(db_path);
+}
+
+TEST(PlayableCoreTest, DistinctQueriesStillPersistAsDistinctInteractions) {
+    const std::filesystem::path db_path = std::filesystem::temp_directory_path() / "proteus_test_query_submit_distinct.db";
+    std::filesystem::remove(db_path);
+
+    {
+        proteus::persistence::SqliteDb db;
+        db.open(db_path.string());
+        proteus::persistence::ensure_schema(db);
+
+        upsert_bandit_state(db, "query-distinct", 0.0, 0.01, std::vector<double>(18, 0.0));
+        proteus::playable::BanditSelector selector(db, "query-distinct");
+
+        const auto player = proteus::bandits::PlayerContext{.stable_player_id = "player_B"};
+        proteus::playable::run_retrieval(db, proteus::playable::RetrievalRequest{.domain = "rpg", .raw_prompt = "find a blacksmith", .session_id = "session-distinct", .player_context = player, .policy_version = "query-distinct"}, selector);
+        proteus::playable::run_retrieval(db, proteus::playable::RetrievalRequest{.domain = "rpg", .raw_prompt = "find an alchemist", .session_id = "session-distinct", .player_context = player, .policy_version = "query-distinct"}, selector);
+
+        auto count_stmt = db.prepare("SELECT COUNT(*) FROM interaction_log WHERE stable_player_id = ?1;");
+        count_stmt.bind_text(1, "player_B");
+        ASSERT_EQ(count_stmt.step(), true);
+        EXPECT_EQ(count_stmt.column_int64(0), 2);
+    }
+
+    std::filesystem::remove(db_path);
+}
+
+TEST(PlayableCoreTest, SameQueryDifferentPlayersAreStoredIndependently) {
+    const std::filesystem::path db_path = std::filesystem::temp_directory_path() / "proteus_test_query_submit_players.db";
+    std::filesystem::remove(db_path);
+
+    {
+        proteus::persistence::SqliteDb db;
+        db.open(db_path.string());
+        proteus::persistence::ensure_schema(db);
+
+        upsert_bandit_state(db, "query-players", 0.0, 0.01, std::vector<double>(18, 0.0));
+        proteus::playable::BanditSelector selector(db, "query-players");
+
+        const proteus::playable::RetrievalRequest req_b{
+            .domain = "rpg",
+            .raw_prompt = "show nearby quests",
+            .session_id = "session-players",
+            .player_context = proteus::bandits::PlayerContext{.stable_player_id = "player_B"},
+            .policy_version = "query-players"
+        };
+        const proteus::playable::RetrievalRequest req_c{
+            .domain = "rpg",
+            .raw_prompt = "show nearby quests",
+            .session_id = "session-players",
+            .player_context = proteus::bandits::PlayerContext{.stable_player_id = "player_C"},
+            .policy_version = "query-players"
+        };
+
+        for (int i = 0; i < 10; ++i) {
+            proteus::playable::run_retrieval(db, req_b, selector);
+            proteus::playable::run_retrieval(db, req_c, selector);
+        }
+
+        auto count_b = db.prepare("SELECT COUNT(*) FROM interaction_log WHERE stable_player_id = ?1;");
+        count_b.bind_text(1, "player_B");
+        ASSERT_EQ(count_b.step(), true);
+        EXPECT_EQ(count_b.column_int64(0), 1);
+
+        auto count_c = db.prepare("SELECT COUNT(*) FROM interaction_log WHERE stable_player_id = ?1;");
+        count_c.bind_text(1, "player_C");
+        ASSERT_EQ(count_c.step(), true);
+        EXPECT_EQ(count_c.column_int64(0), 1);
+    }
+
+    std::filesystem::remove(db_path);
+}
+
+TEST(PlayableCoreTest, QuerySubmitDedupProducesStableEndStateAcrossReruns) {
+    const std::filesystem::path db_path = std::filesystem::temp_directory_path() / "proteus_test_query_submit_rerun.db";
+    std::filesystem::remove(db_path);
+
+    {
+        proteus::persistence::SqliteDb db;
+        db.open(db_path.string());
+        proteus::persistence::ensure_schema(db);
+
+        upsert_bandit_state(db, "query-rerun", 0.0, 0.01, std::vector<double>(18, 0.0));
+        proteus::playable::BanditSelector selector(db, "query-rerun");
+
+        const proteus::playable::RetrievalRequest req{
+            .domain = "rpg",
+            .raw_prompt = std::string(900, 'x'),
+            .session_id = "session-rerun",
+            .player_context = proteus::bandits::PlayerContext{.stable_player_id = "player_B"},
+            .policy_version = "query-rerun"
+        };
+
+        for (int i = 0; i < 20; ++i) {
+            proteus::playable::run_retrieval(db, req, selector);
+        }
+
+        auto before_stmt = db.prepare("SELECT COUNT(*), MAX(LENGTH(raw_query_text)) FROM interaction_log WHERE stable_player_id = ?1;");
+        before_stmt.bind_text(1, "player_B");
+        ASSERT_EQ(before_stmt.step(), true);
+        const auto before_count = before_stmt.column_int64(0);
+        const auto before_max_len = before_stmt.column_int64(1);
+
+        for (int i = 0; i < 20; ++i) {
+            proteus::playable::run_retrieval(db, req, selector);
+        }
+
+        auto after_stmt = db.prepare("SELECT COUNT(*), MAX(LENGTH(raw_query_text)) FROM interaction_log WHERE stable_player_id = ?1;");
+        after_stmt.bind_text(1, "player_B");
+        ASSERT_EQ(after_stmt.step(), true);
+        const auto after_count = after_stmt.column_int64(0);
+        const auto after_max_len = after_stmt.column_int64(1);
+
+        EXPECT_EQ(before_count, 1);
+        EXPECT_EQ(after_count, 1);
+        EXPECT_EQ(before_max_len, 512);
+        EXPECT_EQ(after_max_len, 512);
+    }
+
+    std::filesystem::remove(db_path);
+}
+
 TEST(PlayableCoreTest, SchemaValidationRejectsMalformedProposal) {
     nlohmann::json invalid = {
         {"proposal_id", "bad"},
