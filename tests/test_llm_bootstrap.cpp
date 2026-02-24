@@ -1,7 +1,6 @@
 #include "proteus/bootstrap/import_novel_query_artifact.hpp"
 #include "proteus/llm/llm_cache_client.hpp"
-#include "proteus/persistence/schema.hpp"
-#include "proteus/persistence/sqlite_db.hpp"
+#include "test_db_raii.hpp"
 
 #include <gtest/gtest.h>
 
@@ -13,45 +12,9 @@
 #include <string>
 #include <vector>
 
-namespace {
-
-class TestDbLifetime {
-public:
-    explicit TestDbLifetime(const std::string& test_name) {
-        const auto count = counter_.fetch_add(1);
-        const std::string key = test_name + ":" + std::to_string(count);
-        const auto suffix = static_cast<unsigned long long>(std::hash<std::string>{}(key) & 0xFFFFFFFFULL);
-
-        std::ostringstream name;
-        name << "proteus_test_llm_" << std::hex << suffix << ".db";
-        path_ = std::filesystem::temp_directory_path() / name.str();
-
-        std::filesystem::remove(path_);
-        db_.open(path_.string());
-        proteus::persistence::ensure_schema(db_);
-    }
-
-    ~TestDbLifetime() {
-        db_.Close();
-        std::filesystem::remove(path_);
-    }
-
-    proteus::persistence::SqliteDb& db() { return db_; }
-    const std::filesystem::path& path() const { return path_; }
-
-private:
-    static std::atomic<std::uint64_t> counter_;
-    std::filesystem::path path_;
-    proteus::persistence::SqliteDb db_;
-};
-
-std::atomic<std::uint64_t> TestDbLifetime::counter_{0};
-
-}  // namespace
-
 TEST(LlmBootstrapTest, OfflineCacheMissIsDeterministicAndNoRowsWritten) {
     {
-        TestDbLifetime test_db("offline_cache_miss");
+        proteus::tests::TestSqliteDbFile test_db("offline_cache_miss");
         auto& db = test_db.db();
 
         const auto request = proteus::llm::BuildDeterministicRequest("openai", "gpt-4.1-mini", "proteus_novel_query_bootstrap", 1, "novel query text");
@@ -67,7 +30,7 @@ TEST(LlmBootstrapTest, OfflineCacheMissIsDeterministicAndNoRowsWritten) {
 
 TEST(LlmBootstrapTest, CacheReplayIsByteIdentical) {
     {
-        TestDbLifetime test_db("cache_replay");
+        proteus::tests::TestSqliteDbFile test_db("cache_replay");
         auto& db = test_db.db();
 
         const auto request = proteus::llm::BuildDeterministicRequest("openai", "gpt-4.1-mini", "proteus_novel_query_bootstrap", 1, "fixed prompt");
@@ -99,7 +62,7 @@ TEST(LlmBootstrapTest, CacheReplayIsByteIdentical) {
 
 TEST(LlmBootstrapTest, ImportDeterminismProposalIdsStableAcrossReruns) {
     {
-        TestDbLifetime test_db("import_det");
+        proteus::tests::TestSqliteDbFile test_db("import_det");
         auto& db = test_db.db();
 
         const std::string artifact = R"({"normalized_query_text":"where healer","intent_tags":["healer","quest"],"synopsis":"Seek healer herbs around temples.","proposals":[{"proposal_title":"Temple Route","proposal_body":"Ask priests.","choice_seed_hint":"route-1","risk_profile":"low"},{"proposal_title":"Forest Route","proposal_body":"Search glades.","choice_seed_hint":"route-2","risk_profile":"medium"},{"proposal_title":"Bandit Route","proposal_body":"Loot caches.","choice_seed_hint":"route-3","risk_profile":"high"}],"safety_flags":[]})";
@@ -125,7 +88,7 @@ TEST(LlmBootstrapTest, ImportDeterminismProposalIdsStableAcrossReruns) {
 
 TEST(LlmBootstrapTest, ImportAppliesDeterministicStringCaps) {
     {
-        TestDbLifetime test_db("import_caps");
+        proteus::tests::TestSqliteDbFile test_db("import_caps");
         auto& db = test_db.db();
 
         const std::string long_text(500, 'z');
@@ -150,7 +113,7 @@ TEST(LlmBootstrapTest, ImportAppliesDeterministicStringCaps) {
 TEST(LlmBootstrapTest, DbHandleClosesAndFileIsDeletable) {
     std::filesystem::path db_path;
     {
-        TestDbLifetime test_db("close_delete");
+        proteus::tests::TestSqliteDbFile test_db("close_delete");
         db_path = test_db.path();
         EXPECT_EQ(test_db.db().is_open(), true);
         test_db.db().Close();
@@ -161,7 +124,7 @@ TEST(LlmBootstrapTest, DbHandleClosesAndFileIsDeletable) {
 
 
 TEST(LlmBootstrapTest, NpcIdIsStableAcrossReruns) {
-    TestDbLifetime test_db("npc_id_stable");
+    proteus::tests::TestSqliteDbFile test_db("npc_id_stable");
     auto& db = test_db.db();
     const std::string artifact = R"({"intent_summary":"looking for smith","npc_candidates":[{"npc_name":"Borin","npc_role":"Blacksmith","why_relevant":"crafting","mood_seed_hint":"busy"},{"npc_name":"Mira","npc_role":"Alchemist","why_relevant":"potions","mood_seed_hint":"curious"},{"npc_name":"Tarn","npc_role":"Guard Captain","why_relevant":"security","mood_seed_hint":"stern"}]})";
     ASSERT_EQ(proteus::bootstrap::ImportBootstrapArtifactForDomain(db, "p", "s", "find smith", proteus::query::QueryDomain::NpcIntent, artifact, 1), true);
@@ -173,7 +136,7 @@ TEST(LlmBootstrapTest, NpcIdIsStableAcrossReruns) {
 }
 
 TEST(LlmBootstrapTest, DialogueProposalIdsStableAcrossReruns) {
-    TestDbLifetime test_db("dialogue_stable");
+    proteus::tests::TestSqliteDbFile test_db("dialogue_stable");
     auto& db = test_db.db();
     const std::string artifact = R"({"npc_opening_line":"Need something?","options":[{"option_text":"Trade?","option_tone":"polite","option_goal_tag":"trade"},{"option_text":"Tell me rumors","option_tone":"curious","option_goal_tag":"rumors"},{"option_text":"Stand aside","option_tone":"blunt","option_goal_tag":"intimidate"}],"include_idk":true,"idk_prompt":"Not sure"})";
 
@@ -189,7 +152,7 @@ TEST(LlmBootstrapTest, DialogueProposalIdsStableAcrossReruns) {
 }
 
 TEST(LlmBootstrapTest, OfflineMissDoesNotMutateBootstrapTables) {
-    TestDbLifetime test_db("offline_nomutate");
+    proteus::tests::TestSqliteDbFile test_db("offline_nomutate");
     auto& db = test_db.db();
     const auto request = proteus::llm::BuildDeterministicRequest("openai", "gpt-4.1-mini", "proteus_bootstrap_class_v1", 1, "brand new class");
     proteus::llm::LlmCacheClient client;
