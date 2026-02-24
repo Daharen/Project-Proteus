@@ -50,8 +50,18 @@ target_include_directories(proteus_core
 target_link_libraries(proteus_core PUBLIC proteus_sqlite OpenSSL::Crypto)
 
 if(PROTEUS_ENABLE_OPENAI)
+    if(NOT TARGET OpenSSL::SSL)
+        message(FATAL_ERROR "PROTEUS_ENABLE_OPENAI=ON requires OpenSSL (SSL and Crypto). Install OpenSSL (for example via vcpkg) and reconfigure.")
+    endif()
+
     target_sources(proteus_core PRIVATE src/llm/openai/openai_responses_client.cpp)
-    target_compile_definitions(proteus_core PUBLIC PROTEUS_ENABLE_OPENAI=1)
+    target_compile_definitions(proteus_core
+        PUBLIC
+            PROTEUS_ENABLE_OPENAI=1
+            CPPHTTPLIB_OPENSSL_SUPPORT
+            HTTPLIB_OPENSSL_SUPPORT
+    )
+    target_link_libraries(proteus_core PUBLIC OpenSSL::SSL OpenSSL::Crypto)
 endif()
 
 add_executable(proteus_cli src/main.cpp)
