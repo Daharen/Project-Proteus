@@ -1,8 +1,52 @@
 #include "proteus/playable/prompt_cache.hpp"
 
+#include <iostream>
 #include <stdexcept>
 
 namespace proteus::playable {
+
+namespace {
+
+constexpr std::size_t kMaxStoredRawQueryTextLength = 512;
+
+std::string truncate_raw_query_text_for_storage(const std::string& raw_query_text) {
+    if (raw_query_text.size() <= kMaxStoredRawQueryTextLength) {
+        return raw_query_text;
+    }
+    return raw_query_text.substr(0, kMaxStoredRawQueryTextLength);
+}
+
+bool should_dedupe_identical_submit(persistence::SqliteDb& db, const InteractionLogRecord& record) {
+    if (record.stable_player_id.empty() || record.session_id.empty() || record.query_id <= 0) {
+        return false;
+    }
+
+    auto stmt = db.prepare(
+        "SELECT query_id, session_id, chosen_arm, prompt_hash, raw_query_text "
+        "FROM interaction_log "
+        "WHERE stable_player_id = ?1 AND session_id = ?2 "
+        "ORDER BY id DESC LIMIT 1;"
+    );
+    stmt.bind_text(1, record.stable_player_id);
+    stmt.bind_text(2, record.session_id);
+    if (!stmt.step()) {
+        return false;
+    }
+
+    const std::int64_t previous_query_id = stmt.column_is_null(0) ? 0 : stmt.column_int64(0);
+    const std::string previous_session_id = stmt.column_text(1);
+    const std::string previous_proposal_id = stmt.column_is_null(2) ? std::string{} : stmt.column_text(2);
+    const std::string previous_prompt_hash = stmt.column_is_null(3) ? std::string{} : stmt.column_text(3);
+    const std::string previous_raw_query_text = stmt.column_is_null(4) ? std::string{} : stmt.column_text(4);
+
+    return previous_query_id == record.query_id
+        && previous_session_id == record.session_id
+        && previous_proposal_id == record.chosen_arm
+        && previous_prompt_hash == record.prompt_hash
+        && previous_raw_query_text == truncate_raw_query_text_for_storage(record.raw_query_text);
+}
+
+}  // namespace
 
 std::optional<PromptCacheRecord> find_prompt_cache(persistence::SqliteDb& db, const std::string& prompt_hash) {
     auto stmt = db.prepare(
@@ -159,6 +203,24 @@ Proposal load_proposal(persistence::SqliteDb& db, const std::string& proposal_id
 }
 
 void insert_interaction_log(persistence::SqliteDb& db, const InteractionLogRecord& record) {
+    // Invariant: repeated identical submits for the same player/query/session/proposal must not
+    // write duplicate interaction rows, or query_count can be inflated without new gameplay signal.
+    persistence::SqliteTransaction tx(db);
+    if (should_dedupe_identical_submit(db, record)) {
+        std::clog
+            << "event=interaction_log_dedupe reason=DEDUPED_IDENTICAL_SUBMIT_V1"
+            << " stable_player_id=" << record.stable_player_id
+            << " query_id=" << record.query_id
+            << " session_id=" << record.session_id
+            << " proposal_id=" << record.chosen_arm
+            << " prompt_hash=" << record.prompt_hash
+            << "\n";
+        tx.commit();
+        return;
+    }
+
+    const std::string raw_query_text_for_storage = truncate_raw_query_text_for_storage(record.raw_query_text);
+
     auto stmt = db.prepare(
         "INSERT INTO interaction_log("
         "session_id, prompt_hash, player_context_json, raw_query_text, query_id, chosen_arm, novelty_flag, reward_signal, reward_applied, selection_seed, decision_features_json, stable_player_id, base_score, topology_modifier, final_score, timestamp"
@@ -167,7 +229,7 @@ void insert_interaction_log(persistence::SqliteDb& db, const InteractionLogRecor
     stmt.bind_text(1, record.session_id);
     stmt.bind_text(2, record.prompt_hash);
     stmt.bind_text(3, record.player_context_json);
-    stmt.bind_text(4, record.raw_query_text);
+    stmt.bind_text(4, raw_query_text_for_storage);
     if (record.query_id <= 0) {
         stmt.bind_null(5);
     } else {
@@ -193,6 +255,7 @@ void insert_interaction_log(persistence::SqliteDb& db, const InteractionLogRecor
     stmt.bind_double(15, record.final_score);
     stmt.bind_int64(16, record.timestamp);
     stmt.step();
+    tx.commit();
 }
 
 bool log_reward_interaction_once(persistence::SqliteDb& db, const std::string& session_id, const std::string& proposal_id, double reward_value) {

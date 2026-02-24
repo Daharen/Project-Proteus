@@ -2,11 +2,14 @@
 
 #include "sqlite3.h"
 
+#include <memory>
 #include <cstdint>
 #include <string>
 #include <vector>
 
 namespace proteus::persistence {
+
+class SqliteDb;
 
 class SqliteStatement {
 public:
@@ -37,7 +40,13 @@ public:
     sqlite3_stmt* native_handle() const;
 
 private:
-    sqlite3_stmt* stmt_ = nullptr;
+    friend class SqliteDb;
+    SqliteStatement(sqlite3_stmt* stmt, SqliteDb* owner);
+
+    sqlite3_stmt* stmt_or_throw() const;
+
+    std::shared_ptr<sqlite3_stmt*> stmt_;
+    SqliteDb* owner_ = nullptr;
 };
 
 class SqliteDb {
@@ -52,13 +61,21 @@ public:
     SqliteDb& operator=(SqliteDb&& other) noexcept;
 
     void open(const std::string& path);
+    void Close();
+    bool is_open() const;
     void exec(const std::string& sql);
     SqliteStatement prepare(const std::string& sql) const;
 
     sqlite3* native_handle() const;
 
 private:
+    friend class SqliteStatement;
+
+    void register_statement_handle(const std::shared_ptr<sqlite3_stmt*>& stmt) const;
+    void unregister_statement_handle(const std::shared_ptr<sqlite3_stmt*>& stmt) const;
+
     sqlite3* db_ = nullptr;
+    mutable std::vector<std::shared_ptr<sqlite3_stmt*>> active_statements_;
 };
 
 class SqliteTransaction {

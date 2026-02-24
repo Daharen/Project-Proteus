@@ -5,6 +5,8 @@
 #include "proteus/playable/prompt_cache.hpp"
 #include "proteus/playable/retrieval_engine.hpp"
 #include "proteus/query/query_identity.hpp"
+#include "proteus/llm/llm_cache_client.hpp"
+#include "proteus/bootstrap/import_novel_query_artifact.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -14,6 +16,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cerrno>
 #include <filesystem>
 #include <fstream>
@@ -40,6 +43,33 @@ struct HttpClientResponse {
     int status = 0;
     nlohmann::json json;
 };
+
+llm::LlmMode parse_llm_mode() {
+    const char* mode = std::getenv("PROTEUS_LLM_MODE");
+    if (mode != nullptr && std::string(mode) == "ONLINE_CAPTURE") {
+        return llm::LlmMode::OnlineCapture;
+    }
+    return llm::LlmMode::Offline;
+}
+
+nlohmann::json load_bootstrap_proposals(persistence::SqliteDb& db, std::int64_t query_id) {
+    auto stmt = db.prepare(
+        "SELECT proposal_id, proposal_title, proposal_body, choice_seed_hint, risk_profile "
+        "FROM query_bootstrap_proposals WHERE query_id = ?1 ORDER BY schema_version DESC, proposal_index ASC;"
+    );
+    stmt.bind_int64(1, query_id);
+    nlohmann::json rows = nlohmann::json::array({});
+    while (stmt.step()) {
+        rows.push_back({
+            {"proposal_id", stmt.column_text(0)},
+            {"proposal_title", stmt.column_text(1)},
+            {"proposal_body", stmt.column_text(2)},
+            {"choice_seed_hint", stmt.column_text(3)},
+            {"risk_profile", stmt.column_text(4)}
+        });
+    }
+    return rows;
+}
 
 std::string generate_session_id() {
     std::mt19937_64 rng(std::random_device{}());
@@ -494,17 +524,55 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
         BanditSelector selector(db, kPlayableCorePolicyVersion);
 
         const auto context = parse_player_context(body);
+        const auto raw_prompt = body.at("prompt").get<std::string>();
         const auto result = run_retrieval_detailed(
             db,
             RetrievalRequest{
                 .domain = body.at("domain").get<std::string>(),
-                .raw_prompt = body.at("prompt").get<std::string>(),
+                .raw_prompt = raw_prompt,
                 .session_id = session_id,
                 .player_context = context,
             },
             selector
         );
         const std::string stable_player_id = context.stable_player_id.empty() ? session_id : context.stable_player_id;
+
+        const std::int64_t query_id = query::GetOrCreateQueryId(db, raw_prompt);
+        const bool has_bootstrap = bootstrap::QueryHasBootstrapProposals(db, query_id);
+        nlohmann::json bootstrap_payload = {{"status", "existing"}, {"query_id", static_cast<double>(query_id)}, {"synopsis", nullptr}, {"proposals", nlohmann::json::array({})}};
+
+        if (!has_bootstrap) {
+            llm::LlmCacheClient llm_client;
+            const auto mode = parse_llm_mode();
+            const auto request = llm::BuildDeterministicRequest(
+                "openai",
+                "gpt-4.1-mini",
+                "proteus_novel_query_bootstrap",
+                1,
+                raw_prompt
+            );
+            const auto artifact_result = llm_client.TryGetOrCaptureArtifact(db, request, mode);
+            if (artifact_result.status == llm::LlmArtifactStatus::CacheHit || artifact_result.status == llm::LlmArtifactStatus::CapturedAndCached) {
+                if (bootstrap::ImportNovelQueryArtifact(db, stable_player_id, session_id, raw_prompt, artifact_result.artifact_json, 1)) {
+                    bootstrap_payload["status"] = artifact_result.status == llm::LlmArtifactStatus::CacheHit ? "cache_hit" : "captured_and_cached";
+                } else {
+                    bootstrap_payload["status"] = "validation_failed";
+                }
+            } else if (artifact_result.status == llm::LlmArtifactStatus::CacheMissOffline) {
+                bootstrap_payload["status"] = "offline_cache_miss";
+                bootstrap_payload["placeholder"] = "No data yet. Retry when online capture mode is enabled.";
+            } else {
+                bootstrap_payload["status"] = "provider_error";
+                bootstrap_payload["error_code"] = artifact_result.provider_error_code;
+            }
+        }
+
+        auto meta_stmt = db.prepare("SELECT synopsis FROM query_metadata WHERE query_id = ?1 LIMIT 1;");
+        meta_stmt.bind_int64(1, query_id);
+        if (meta_stmt.step()) {
+            bootstrap_payload["synopsis"] = meta_stmt.column_text(0);
+        }
+        bootstrap_payload["proposals"] = load_bootstrap_proposals(db, query_id);
 
         send_json(res, 200, nlohmann::json{
             {"ok", true},
@@ -526,6 +594,7 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
             }},
             {"proposal", result.proposal},
             {"candidate_count", static_cast<double>(list_prompt_candidate_ids(db, result.prompt_hash).size())},
+            {"bootstrap", bootstrap_payload},
         });
     });
 
