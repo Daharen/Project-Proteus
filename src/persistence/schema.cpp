@@ -331,6 +331,48 @@ void migrate_8_to_9(SqliteDb& db) {
     );
 }
 
+void migrate_9_to_10(SqliteDb& db) {
+    if (!column_exists(db, "query_registry", "query_domain")) {
+        db.exec("ALTER TABLE query_registry ADD COLUMN query_domain INTEGER NOT NULL DEFAULT 0;");
+    }
+    if (!column_exists(db, "query_registry", "normalized_text_hash64")) {
+        db.exec("ALTER TABLE query_registry ADD COLUMN normalized_text_hash64 INTEGER;");
+    }
+    db.exec("UPDATE query_registry SET normalized_text_hash64 = hash64 WHERE normalized_text_hash64 IS NULL;");
+    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS uq_query_registry_domain_hash ON query_registry(query_domain, normalized_text_hash64);");
+
+    if (!column_exists(db, "query_metadata", "query_domain")) {
+        db.exec("ALTER TABLE query_metadata ADD COLUMN query_domain INTEGER NOT NULL DEFAULT 0;");
+    }
+    if (!column_exists(db, "query_metadata", "title")) {
+        db.exec("ALTER TABLE query_metadata ADD COLUMN title TEXT NOT NULL DEFAULT ''; ");
+    }
+    if (!column_exists(db, "query_metadata", "tags_json")) {
+        db.exec("ALTER TABLE query_metadata ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]';");
+    }
+    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS uq_query_metadata_id_domain ON query_metadata(query_id, query_domain);");
+
+    if (!column_exists(db, "query_bootstrap_proposals", "query_domain")) {
+        db.exec("ALTER TABLE query_bootstrap_proposals ADD COLUMN query_domain INTEGER NOT NULL DEFAULT 0;");
+    }
+    if (!column_exists(db, "query_bootstrap_proposals", "proposal_kind")) {
+        db.exec("ALTER TABLE query_bootstrap_proposals ADD COLUMN proposal_kind INTEGER NOT NULL DEFAULT 0;");
+    }
+    if (!column_exists(db, "query_bootstrap_proposals", "proposal_json")) {
+        db.exec("ALTER TABLE query_bootstrap_proposals ADD COLUMN proposal_json TEXT NOT NULL DEFAULT '{}';");
+    }
+
+    db.exec(
+        "CREATE TABLE IF NOT EXISTS npc_registry ("
+        "npc_id BLOB PRIMARY KEY,"
+        "npc_name TEXT NOT NULL,"
+        "npc_role TEXT NOT NULL,"
+        "npc_seed_material TEXT NOT NULL,"
+        "created_from_query_id INTEGER NOT NULL"
+        ");"
+    );
+}
+
 void verify_sqlite_capabilities(SqliteDb& db, bool verbose) {
     auto fts_stmt = db.prepare("SELECT sqlite_compileoption_used('ENABLE_FTS5');");
     if (!fts_stmt.step() || fts_stmt.column_int64(0) == 0) {
@@ -359,6 +401,7 @@ void apply_migration(SqliteDb& db, int from_version) {
         case 6: migrate_6_to_7(db); return;
         case 7: migrate_7_to_8(db); return;
         case 8: migrate_8_to_9(db); return;
+        case 9: migrate_9_to_10(db); return;
         default: throw std::runtime_error("Unsupported schema version: " + std::to_string(from_version));
     }
 }

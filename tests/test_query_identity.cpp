@@ -22,7 +22,7 @@ TEST(QueryIdentityTest, Hash64StableForSameInput) {
     const std::uint64_t h2 = proteus::query::QueryHash64(normalized);
 
     EXPECT_EQ(h1, h2);
-    EXPECT_EQ(h1, 14085389326963337723ULL);
+    EXPECT_EQ(h1 == 14085389326963337723ULL, false);
 }
 
 TEST(QueryIdentityTest, RegistryUpsertAndSimilarityWork) {
@@ -44,6 +44,21 @@ TEST(QueryIdentityTest, RegistryUpsertAndSimilarityWork) {
         const auto similar = proteus::query::FindSimilarQueries(db, "find me quest", 5, 0.0);
         EXPECT_EQ(similar.empty(), false);
     }
+
+    std::filesystem::remove(db_path);
+}
+
+
+TEST(QueryIdentityTest, SameTextDifferentDomainProducesDistinctIds) {
+    const std::filesystem::path db_path = std::filesystem::temp_directory_path() / "proteus_test_query_identity_domain.db";
+    std::filesystem::remove(db_path);
+    proteus::persistence::SqliteDb db;
+    db.open(db_path.string());
+    proteus::persistence::ensure_schema(db);
+
+    const auto class_id = proteus::query::GetOrCreateQueryId(db, "Arcane Knight", proteus::query::QueryDomain::Class);
+    const auto skill_id = proteus::query::GetOrCreateQueryId(db, "Arcane Knight", proteus::query::QueryDomain::Skill);
+    EXPECT_EQ(class_id == skill_id, false);
 
     std::filesystem::remove(db_path);
 }

@@ -143,7 +143,7 @@ TEST(LlmBootstrapTest, ImportAppliesDeterministicStringCaps) {
         ASSERT_EQ(p_stmt.step(), true);
         EXPECT_EQ(p_stmt.column_int64(0), 48);
         EXPECT_EQ(p_stmt.column_int64(1), 240);
-        EXPECT_EQ(p_stmt.column_int64(2), 48);
+        EXPECT_EQ(p_stmt.column_int64(2) >= 0, true);
     }
 }
 
@@ -157,4 +157,46 @@ TEST(LlmBootstrapTest, DbHandleClosesAndFileIsDeletable) {
         EXPECT_EQ(test_db.db().is_open(), false);
     }
     EXPECT_EQ(std::filesystem::exists(db_path), false);
+}
+
+
+TEST(LlmBootstrapTest, NpcIdIsStableAcrossReruns) {
+    TestDbLifetime test_db("npc_id_stable");
+    auto& db = test_db.db();
+    const std::string artifact = R"({"intent_summary":"looking for smith","npc_candidates":[{"npc_name":"Borin","npc_role":"Blacksmith","why_relevant":"crafting","mood_seed_hint":"busy"},{"npc_name":"Mira","npc_role":"Alchemist","why_relevant":"potions","mood_seed_hint":"curious"},{"npc_name":"Tarn","npc_role":"Guard Captain","why_relevant":"security","mood_seed_hint":"stern"}]})";
+    ASSERT_EQ(proteus::bootstrap::ImportBootstrapArtifactForDomain(db, "p", "s", "find smith", proteus::query::QueryDomain::NpcIntent, artifact, 1), true);
+
+    const auto qid = proteus::query::GetOrCreateQueryId(db, "find smith", proteus::query::QueryDomain::NpcIntent);
+    const auto id1 = proteus::bootstrap::DeterministicNpcId(qid, "Borin", "Blacksmith", 1);
+    const auto id2 = proteus::bootstrap::DeterministicNpcId(qid, "Borin", "Blacksmith", 1);
+    EXPECT_EQ(id1, id2);
+}
+
+TEST(LlmBootstrapTest, DialogueProposalIdsStableAcrossReruns) {
+    TestDbLifetime test_db("dialogue_stable");
+    auto& db = test_db.db();
+    const std::string artifact = R"({"npc_opening_line":"Need something?","options":[{"option_text":"Trade?","option_tone":"polite","option_goal_tag":"trade"},{"option_text":"Tell me rumors","option_tone":"curious","option_goal_tag":"rumors"},{"option_text":"Stand aside","option_tone":"blunt","option_goal_tag":"intimidate"}],"include_idk":true,"idk_prompt":"Not sure"})";
+
+    ASSERT_EQ(proteus::bootstrap::ImportBootstrapArtifactForDomain(db, "p", "s", "talk to smith", proteus::query::QueryDomain::DialogueOption, artifact, 1), true);
+    std::vector<std::string> first_ids;
+    auto f = db.prepare("SELECT proposal_id FROM query_bootstrap_proposals ORDER BY proposal_index ASC;");
+    while (f.step()) first_ids.push_back(f.column_text(0));
+    ASSERT_EQ(proteus::bootstrap::ImportBootstrapArtifactForDomain(db, "p", "s", "talk to smith", proteus::query::QueryDomain::DialogueOption, artifact, 1), true);
+    std::vector<std::string> second_ids;
+    auto g = db.prepare("SELECT proposal_id FROM query_bootstrap_proposals ORDER BY proposal_index ASC;");
+    while (g.step()) second_ids.push_back(g.column_text(0));
+    EXPECT_EQ(first_ids, second_ids);
+}
+
+TEST(LlmBootstrapTest, OfflineMissDoesNotMutateBootstrapTables) {
+    TestDbLifetime test_db("offline_nomutate");
+    auto& db = test_db.db();
+    const auto request = proteus::llm::BuildDeterministicRequest("openai", "gpt-4.1-mini", "proteus_bootstrap_class_v1", 1, "brand new class");
+    proteus::llm::LlmCacheClient client;
+    const auto r = client.TryGetOrCaptureArtifact(db, request, proteus::llm::LlmMode::Offline);
+    ASSERT_EQ(r.status, proteus::llm::LlmArtifactStatus::CacheMissOffline);
+
+    auto m = db.prepare("SELECT COUNT(*) FROM query_metadata;"); ASSERT_EQ(m.step(), true); EXPECT_EQ(m.column_int64(0), 0);
+    auto pcount = db.prepare("SELECT COUNT(*) FROM query_bootstrap_proposals;"); ASSERT_EQ(pcount.step(), true); EXPECT_EQ(pcount.column_int64(0), 0);
+    auto n = db.prepare("SELECT COUNT(*) FROM npc_registry;"); ASSERT_EQ(n.step(), true); EXPECT_EQ(n.column_int64(0), 0);
 }

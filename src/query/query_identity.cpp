@@ -87,11 +87,13 @@ std::string NormalizeQuery(std::string_view raw) {
     return out;
 }
 
-std::uint64_t QueryHash64(std::string_view normalized) {
+std::uint64_t QueryHash64(std::string_view normalized, QueryDomain domain) {
     constexpr std::uint64_t kOffsetBasis = 14695981039346656037ULL;
     constexpr std::uint64_t kPrime = 1099511628211ULL;
 
     std::uint64_t hash = kOffsetBasis;
+    hash ^= static_cast<std::uint64_t>(domain);
+    hash *= kPrime;
     for (unsigned char c : normalized) {
         hash ^= static_cast<std::uint64_t>(c);
         hash *= kPrime;
@@ -99,21 +101,24 @@ std::uint64_t QueryHash64(std::string_view normalized) {
     return hash;
 }
 
-std::int64_t GetOrCreateQueryId(persistence::SqliteDb& db, const std::string& raw_text) {
+std::int64_t GetOrCreateQueryId(persistence::SqliteDb& db, const std::string& raw_text, QueryDomain domain) {
     const std::string normalized = NormalizeQuery(raw_text);
-    const std::uint64_t hash = QueryHash64(normalized);
+    const std::uint64_t hash = QueryHash64(normalized, domain);
 
     auto insert_stmt = db.prepare(
-        "INSERT OR IGNORE INTO query_registry(normalized_text, raw_example, hash64, created_at_utc) "
-        "VALUES(?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ','now'));"
+        "INSERT OR IGNORE INTO query_registry(query_domain, normalized_text, raw_example, hash64, normalized_text_hash64, created_at_utc) "
+        "VALUES(?1, ?2, ?3, ?4, ?5, strftime('%Y-%m-%dT%H:%M:%fZ','now'));"
     );
-    insert_stmt.bind_text(1, normalized);
-    insert_stmt.bind_text(2, raw_text);
-    insert_stmt.bind_int64(3, to_sqlite_hash64(hash));
+    insert_stmt.bind_int64(1, static_cast<std::int64_t>(domain));
+    insert_stmt.bind_text(2, normalized);
+    insert_stmt.bind_text(3, raw_text);
+    insert_stmt.bind_int64(4, to_sqlite_hash64(hash));
+    insert_stmt.bind_int64(5, to_sqlite_hash64(hash));
     insert_stmt.step();
 
-    auto select_stmt = db.prepare("SELECT query_id FROM query_registry WHERE hash64 = ?1 LIMIT 1;");
-    select_stmt.bind_int64(1, to_sqlite_hash64(hash));
+    auto select_stmt = db.prepare("SELECT query_id FROM query_registry WHERE query_domain = ?1 AND normalized_text_hash64 = ?2 LIMIT 1;");
+    select_stmt.bind_int64(1, static_cast<std::int64_t>(domain));
+    select_stmt.bind_int64(2, to_sqlite_hash64(hash));
     if (!select_stmt.step()) {
         throw std::runtime_error("Failed to load query_id after upsert");
     }
@@ -124,7 +129,8 @@ std::vector<SimilarQueryMatch> FindSimilarQueries(
     persistence::SqliteDb& db,
     const std::string& raw_text,
     int limit,
-    double min_score
+    double min_score,
+    QueryDomain domain
 ) {
     const int safe_limit = std::max(1, std::min(limit, 100));
     const std::string normalized = NormalizeQuery(raw_text);
@@ -141,12 +147,13 @@ std::vector<SimilarQueryMatch> FindSimilarQueries(
         "SELECT qr.query_id, bm25(query_fts) "
         "FROM query_fts "
         "JOIN query_registry qr ON qr.query_id = query_fts.rowid "
-        "WHERE query_fts MATCH ?1 "
+        "WHERE query_fts MATCH ?1 AND qr.query_domain = ?2 "
         "ORDER BY bm25(query_fts) ASC "
-        "LIMIT ?2;"
+        "LIMIT ?3;"
     );
     stmt.bind_text(1, fts_query);
-    stmt.bind_int64(2, safe_limit);
+    stmt.bind_int64(2, static_cast<std::int64_t>(domain));
+    stmt.bind_int64(3, safe_limit);
 
     std::vector<SimilarQueryMatch> out;
     while (stmt.step()) {
@@ -163,12 +170,13 @@ QueryResolution ResolveQuery(
     persistence::SqliteDb& db,
     const std::string& raw_text,
     int limit,
-    double min_score
+    double min_score,
+    QueryDomain domain
 ) {
     const std::string normalized = NormalizeQuery(raw_text);
-    const std::uint64_t hash64 = QueryHash64(normalized);
-    const std::int64_t query_id = GetOrCreateQueryId(db, raw_text);
-    auto similar = FindSimilarQueries(db, raw_text, limit, min_score);
+    const std::uint64_t hash64 = QueryHash64(normalized, domain);
+    const std::int64_t query_id = GetOrCreateQueryId(db, raw_text, domain);
+    auto similar = FindSimilarQueries(db, raw_text, limit, min_score, domain);
     similar.erase(
         std::remove_if(
             similar.begin(),

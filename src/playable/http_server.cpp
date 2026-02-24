@@ -52,20 +52,37 @@ llm::LlmMode parse_llm_mode() {
     return llm::LlmMode::Offline;
 }
 
-nlohmann::json load_bootstrap_proposals(persistence::SqliteDb& db, std::int64_t query_id) {
+llm::LlmMode parse_llm_mode_from_request(const nlohmann::json& body) {
+    if (body.contains("llm_mode") && body.at("llm_mode").is_string() && body.at("llm_mode").get<std::string>() == "ONLINE_CAPTURE") {
+        return llm::LlmMode::OnlineCapture;
+    }
+    return llm::LlmMode::Offline;
+}
+
+query::QueryDomain parse_query_domain(const std::string& v) {
+    if (v == "class") return query::QueryDomain::Class;
+    if (v == "skill") return query::QueryDomain::Skill;
+    if (v == "npc_intent") return query::QueryDomain::NpcIntent;
+    if (v == "dialogue_line") return query::QueryDomain::DialogueLine;
+    if (v == "dialogue_option") return query::QueryDomain::DialogueOption;
+    return query::QueryDomain::Generic;
+}
+
+nlohmann::json load_bootstrap_proposals(persistence::SqliteDb& db, std::int64_t query_id, query::QueryDomain query_domain) {
     auto stmt = db.prepare(
-        "SELECT proposal_id, proposal_title, proposal_body, choice_seed_hint, risk_profile "
-        "FROM query_bootstrap_proposals WHERE query_id = ?1 ORDER BY schema_version DESC, proposal_index ASC;"
+        "SELECT proposal_id, proposal_kind, proposal_json, proposal_title, proposal_body "
+        "FROM query_bootstrap_proposals WHERE query_id = ?1 AND query_domain = ?2 ORDER BY schema_version DESC, proposal_index ASC;"
     );
     stmt.bind_int64(1, query_id);
+    stmt.bind_int64(2, static_cast<std::int64_t>(query_domain));
     nlohmann::json rows = nlohmann::json::array({});
     while (stmt.step()) {
         rows.push_back({
             {"proposal_id", stmt.column_text(0)},
-            {"proposal_title", stmt.column_text(1)},
-            {"proposal_body", stmt.column_text(2)},
-            {"choice_seed_hint", stmt.column_text(3)},
-            {"risk_profile", stmt.column_text(4)}
+            {"proposal_kind", static_cast<double>(stmt.column_int64(1))},
+            {"proposal_json", ([&](){ try { return nlohmann::json::parse(stmt.column_text(2)); } catch (...) { return nlohmann::json::parse("{}"); } })()},
+            {"proposal_title", stmt.column_text(3)},
+            {"proposal_body", stmt.column_text(4)}
         });
     }
     return rows;
@@ -499,6 +516,60 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
         send_json(res, 200, nlohmann::json{{"ok", true}, {"query_id", static_cast<double>(resolved.query_id)}, {"normalized", resolved.normalized}, {"hash64", std::to_string(resolved.hash64)}, {"similar", similar}});
     });
 
+    svr.Post("/api/funnel/resolve", [config](const httplib::Request& req, httplib::Response& res) {
+        nlohmann::json body;
+        try { body = nlohmann::json::parse(req.body); } catch (...) { send_json(res, 400, nlohmann::json{{"ok", false}}); return; }
+        if (!body.contains("text") || !body.at("text").is_string()) { send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"text required"})}}); return; }
+        const auto domain = parse_query_domain((body.contains("query_domain") && body.at("query_domain").is_string()) ? body.at("query_domain").get<std::string>() : std::string{"generic"});
+        persistence::SqliteDb db; db.open(config.db_path); persistence::ensure_schema(db);
+        const auto resolved = query::ResolveQuery(db, body.at("text").get<std::string>(), 5, 0.2, domain);
+        nlohmann::json similar = nlohmann::json::array({});
+        for (const auto& item : resolved.similar) similar.push_back({{"query_id", static_cast<double>(item.query_id)}, {"score", item.score}});
+        send_json(res, 200, nlohmann::json{{"ok", true}, {"query_id", static_cast<double>(resolved.query_id)}, {"similar", similar}});
+    });
+
+    svr.Post("/api/funnel/bootstrap", [config](const httplib::Request& req, httplib::Response& res) {
+        nlohmann::json body;
+        try { body = nlohmann::json::parse(req.body); } catch (...) { send_json(res, 400, nlohmann::json{{"ok", false}}); return; }
+        if (!body.contains("text") || !body.at("text").is_string()) { send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"text required"})}}); return; }
+        const std::string raw_prompt = body.at("text").get<std::string>();
+        const auto domain = parse_query_domain((body.contains("query_domain") && body.at("query_domain").is_string()) ? body.at("query_domain").get<std::string>() : std::string{"generic"});
+        persistence::SqliteDb db; db.open(config.db_path); persistence::ensure_schema(db);
+        const std::int64_t query_id = query::GetOrCreateQueryId(db, raw_prompt, domain);
+        nlohmann::json payload = {{"ok", true}, {"query_id", static_cast<double>(query_id)}, {"status", "existing"}};
+        if (!bootstrap::QueryHasBootstrapProposals(db, query_id, domain)) {
+            llm::LlmCacheClient llm_client;
+            const std::string schema_name = domain == query::QueryDomain::Class ? "proteus_bootstrap_class_v1" : domain == query::QueryDomain::Skill ? "proteus_bootstrap_skill_v1" : domain == query::QueryDomain::NpcIntent ? "proteus_bootstrap_npc_intent_v1" : "proteus_bootstrap_dialogue_options_v1";
+            const auto request = llm::BuildDeterministicRequest("openai", "gpt-4.1-mini", schema_name, 1, raw_prompt);
+            const auto artifact_result = llm_client.TryGetOrCaptureArtifact(db, request, parse_llm_mode_from_request(body));
+            if (artifact_result.status == llm::LlmArtifactStatus::CacheHit || artifact_result.status == llm::LlmArtifactStatus::CapturedAndCached) {
+                if (bootstrap::ImportBootstrapArtifactForDomain(db, "", "", raw_prompt, domain, artifact_result.artifact_json, 1)) {
+                    payload["status"] = artifact_result.status == llm::LlmArtifactStatus::CacheHit ? "cache_hit" : "captured_and_cached";
+                } else {
+                    payload["status"] = "validation_failed";
+                }
+            } else if (artifact_result.status == llm::LlmArtifactStatus::CacheMissOffline) {
+                payload["status"] = "offline_cache_miss";
+                payload["placeholder"] = "No generated content available offline for this new entry. Try again when online.";
+            } else {
+                payload["status"] = "provider_error";
+            }
+        }
+        payload["proposals"] = load_bootstrap_proposals(db, query_id, domain);
+        send_json(res, 200, payload);
+    });
+
+    svr.Post("/api/dialogue/npc/select", [config](const httplib::Request& req, httplib::Response& res) {
+        nlohmann::json body;
+        try { body = nlohmann::json::parse(req.body); } catch (...) { send_json(res, 400, nlohmann::json{{"ok", false}}); return; }
+        const auto name = (body.contains("npc_name") && body.at("npc_name").is_string()) ? body.at("npc_name").get<std::string>() : std::string{};
+        const auto role = (body.contains("npc_role") && body.at("npc_role").is_string()) ? body.at("npc_role").get<std::string>() : std::string{};
+        const auto query_id = (body.contains("query_id") && body.at("query_id").is_number()) ? static_cast<std::int64_t>(body.at("query_id").get<double>()) : 0;
+        persistence::SqliteDb db; db.open(config.db_path); persistence::ensure_schema(db);
+        bootstrap::UpsertNpcFromCandidate(db, query_id, name, role, 1);
+        send_json(res, 200, nlohmann::json{{"ok", true}});
+    });
+
     svr.Post("/query", [config](const httplib::Request& req, httplib::Response& res) {
         nlohmann::json body;
         try {
@@ -572,7 +643,7 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
         if (meta_stmt.step()) {
             bootstrap_payload["synopsis"] = meta_stmt.column_text(0);
         }
-        bootstrap_payload["proposals"] = load_bootstrap_proposals(db, query_id);
+        bootstrap_payload["proposals"] = load_bootstrap_proposals(db, query_id, query::QueryDomain::Generic);
 
         send_json(res, 200, nlohmann::json{
             {"ok", true},
