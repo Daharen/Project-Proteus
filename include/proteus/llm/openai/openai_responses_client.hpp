@@ -9,6 +9,8 @@ namespace proteus::llm::openai {
 
 ProviderCaptureResult capture_openai_response(const LlmRequest& request);
 
+nlohmann::json build_openai_responses_payload(const LlmRequest& request);
+
 std::string extract_output_text_from_responses_json(const nlohmann::json& parsed);
 
 }
