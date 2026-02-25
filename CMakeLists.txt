@@ -7,7 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(OpenSSL REQUIRED)
 
-option(PROTEUS_ENABLE_OPENAI "Enable OpenAI responses client" OFF)
+option(PROTEUS_ENABLE_OPENAI "Enable OpenAI responses client" ON)
 
 add_subdirectory(third_party/sqlite)
 
