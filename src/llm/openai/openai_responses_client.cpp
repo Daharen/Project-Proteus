@@ -1,5 +1,7 @@
 #include "proteus/llm/openai/openai_responses_client.hpp"
 
+#include "proteus/bootstrap/dimension_contract_registry.hpp"
+
 #include <nlohmann/json.hpp>
 #include <openssl/ssl.h>
 
@@ -162,27 +164,42 @@ ProviderCaptureResult capture_openai_response(const LlmRequest& request) {
     return result;
 }
 
+// Invariants:
+// - Control-plane routing must never derive from request.prompt_text.
+// - Bootstrap schema name is locked to kBootstrapSchemaName regardless of dimension.
 nlohmann::json build_openai_responses_payload(const LlmRequest& request) {
-    nlohmann::json schema = {
-        {"type", "object"},
-        {"properties", {
-            {"normalized_query_text", {{"type", "string"}}},
-            {"intent_tags", {{"type", "array"}, {"items", {{"type", "string"}}}}},
-            {"synopsis", {{"type", "string"}}},
-            {"proposals", {{"type", "array"}}},
-            {"safety_flags", {{"type", "array"}, {"items", {{"type", "string"}}}}}
-        }},
-        {"required", nlohmann::json::array({"normalized_query_text", "intent_tags", "synopsis", "proposals", "safety_flags"})}
-    };
+    nlohmann::json schema;
+    std::string format_name = request.schema_name;
 
-    schema["name"] = kBootstrapSchemaName;
+    if (request.request_kind == LlmRequestKind::BootstrapFunnel) {
+        if (request.dimension_kind != bootstrap::DimensionKind::Class &&
+            request.dimension_kind != bootstrap::DimensionKind::Skill &&
+            request.dimension_kind != bootstrap::DimensionKind::Dialogue) {
+            throw std::runtime_error("OPENAI_BOOTSTRAP_DIMENSION_KIND_INVALID");
+        }
+        const auto& contract = bootstrap::GetDimensionContract(request.dimension_kind);
+        schema = contract.json_schema_builder();
+        format_name = kBootstrapSchemaName;
+    } else {
+        schema = nlohmann::json{
+            {"type", "object"},
+            {"properties", {
+                {"normalized_query_text", {{"type", "string"}}},
+                {"intent_tags", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+                {"synopsis", {{"type", "string"}}},
+                {"proposals", {{"type", "array"}}},
+                {"safety_flags", {{"type", "array"}, {"items", {{"type", "string"}}}}}
+            }},
+            {"required", nlohmann::json::array({"normalized_query_text", "intent_tags", "synopsis", "proposals", "safety_flags"})}
+        };
+    }
 
     return nlohmann::json{
         {"model", request.model},
         {"input", request.prompt_text},
         {"text", {{"format", {
             {"type", "json_schema"},
-            {"name", kBootstrapSchemaName},
+            {"name", format_name},
             {"strict", true},
             {"schema", schema}
         }}}}

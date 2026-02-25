@@ -34,6 +34,7 @@ add_library(proteus_core
     src/query/query_identity.cpp
     src/llm/llm_cache_client.cpp
     src/bootstrap/import_novel_query_artifact.cpp
+    src/bootstrap/dimension_contract_registry.cpp
     src/proteus/responders/response_envelope.cpp
     src/proteus/responders/response_validation.cpp
     src/proteus/responders/responder_manager.cpp

@@ -7,6 +7,7 @@
 #include "proteus/query/query_identity.hpp"
 #include "proteus/llm/llm_cache_client.hpp"
 #include "proteus/bootstrap/import_novel_query_artifact.hpp"
+#include "proteus/bootstrap/dimension_contract_registry.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -539,8 +540,9 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
         nlohmann::json payload = {{"ok", true}, {"query_id", static_cast<double>(query_id)}, {"status", "existing"}};
         if (!bootstrap::QueryHasBootstrapProposals(db, query_id, domain)) {
             llm::LlmCacheClient llm_client;
-            const std::string schema_name = domain == query::QueryDomain::Class ? "proteus_bootstrap_class_v1" : domain == query::QueryDomain::Skill ? "proteus_bootstrap_skill_v1" : domain == query::QueryDomain::NpcIntent ? "proteus_bootstrap_npc_intent_v1" : "proteus_bootstrap_dialogue_options_v1";
-            const auto request = llm::BuildDeterministicRequest("openai", "gpt-4.1-mini", schema_name, 1, raw_prompt);
+            const auto& contract = bootstrap::GetDimensionContractForDomain(domain);
+            const auto prompt_text = bootstrap::BuildBootstrapPromptForDimension(contract.kind, raw_prompt);
+            const auto request = llm::BuildDeterministicRequest("openai", "gpt-4.1-mini", "proteus_funnel_bootstrap_v1", 1, prompt_text, llm::LlmRequestKind::BootstrapFunnel, contract.kind);
             const auto artifact_result = llm_client.TryGetOrCaptureArtifact(db, request, parse_llm_mode_from_request(body));
             if (artifact_result.status == llm::LlmArtifactStatus::CacheHit || artifact_result.status == llm::LlmArtifactStatus::CapturedAndCached) {
                 if (bootstrap::ImportBootstrapArtifactForDomain(db, "", "", raw_prompt, domain, artifact_result.artifact_json, 1)) {
@@ -620,9 +622,11 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
             const auto request = llm::BuildDeterministicRequest(
                 "openai",
                 "gpt-4.1-mini",
-                "proteus_novel_query_bootstrap",
+                "proteus_funnel_bootstrap_v1",
                 1,
-                raw_prompt
+                raw_prompt,
+                llm::LlmRequestKind::BootstrapFunnel,
+                bootstrap::DimensionKind::Class
             );
             const auto artifact_result = llm_client.TryGetOrCaptureArtifact(db, request, mode);
             if (artifact_result.status == llm::LlmArtifactStatus::CacheHit || artifact_result.status == llm::LlmArtifactStatus::CapturedAndCached) {
