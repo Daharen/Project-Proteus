@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -84,6 +85,37 @@ TEST(BootstrapPromptComposerTest, ComposedPromptContainsExpectedFragmentsPerCate
     EXPECT_EQ(prompt.find("PetOwner") != std::string::npos, true);
     EXPECT_EQ(prompt.find("CONSTRAINTS:") != std::string::npos, true);
     EXPECT_EQ(prompt.find("CONTEXT_TOKENS:") != std::string::npos, true);
+}
+
+
+TEST(BootstrapPromptComposerTest, RootRequiredMatchesRootPropertiesIncludingBootstrapCategory) {
+    const auto schema = proteus::bootstrap::BuildBootstrapSchema_ClassCandidateSet();
+    const auto properties = schema.at("properties");
+    const auto required = schema.at("required");
+    ASSERT_EQ(properties.is_object(), true);
+    ASSERT_EQ(required.is_array(), true);
+
+    std::vector<std::string> prop_keys;
+    for (const auto& item : properties.items()) {
+        prop_keys.push_back(item.key());
+    }
+    std::vector<std::string> req_keys;
+    for (const auto& item : required) {
+        if (item.is_string()) {
+            req_keys.push_back(item.get<std::string>());
+        }
+    }
+    std::sort(prop_keys.begin(), prop_keys.end());
+    std::sort(req_keys.begin(), req_keys.end());
+    EXPECT_EQ(prop_keys, req_keys);
+
+    bool has_bootstrap_category = false;
+    for (const auto& key : req_keys) {
+        if (key == "bootstrap_category") {
+            has_bootstrap_category = true;
+        }
+    }
+    EXPECT_EQ(has_bootstrap_category, true);
 }
 
 TEST(BootstrapPromptComposerTest, SchemaRegexAndLimitsArePresent) {

@@ -67,7 +67,7 @@ nlohmann::json build_envelope_schema(const nlohmann::json& proposal_item_schema)
             {"proposals", {{"type", "array"}, {"items", proposal_item_schema}}},
             {"safety_flags", {{"type", "array"}, {"items", {{"type", "string"}}}}}
         }},
-        {"required", nlohmann::json::array({"normalized_query_text", "intent_tags", "synopsis", "proposals", "safety_flags"})}
+        {"required", nlohmann::json::array({"normalized_query_text", "intent_tags", "synopsis", "bootstrap_category", "proposals", "safety_flags"})}
     };
 }
 
