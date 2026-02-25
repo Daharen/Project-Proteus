@@ -4,14 +4,31 @@
 #include <openssl/ssl.h>
 
 #include <cstdlib>
+#include <iostream>
 #include <sstream>
 #include <string>
 
 namespace proteus::llm::openai {
 namespace {
 
-ProviderCaptureResult fail(std::string code) {
-    return ProviderCaptureResult{.ok = false, .error_code = std::move(code)};
+ProviderCaptureResult fail(std::string code, std::string raw_response_text = {}, std::string response_json = {}) {
+    return ProviderCaptureResult{
+        .ok = false,
+        .response_json = std::move(response_json),
+        .raw_response_text = std::move(raw_response_text),
+        .error_code = std::move(code)
+    };
+}
+
+void log_provider_error(const ProviderCaptureResult& result) {
+    std::cerr << "OpenAI responses call failed: error_code=" << result.error_code;
+    if (!result.response_json.empty()) {
+        std::cerr << ", response_json=" << result.response_json;
+    }
+    if (!result.raw_response_text.empty()) {
+        std::cerr << ", raw_response_text=" << result.raw_response_text;
+    }
+    std::cerr << "\n";
 }
 
 ProviderCaptureResult post_openai_responses(const std::string& payload, const std::string& api_key) {
@@ -96,7 +113,14 @@ ProviderCaptureResult post_openai_responses(const std::string& payload, const st
     int status = 0;
     status_line_stream >> http_version >> status;
     if (status < 200 || status >= 300) {
-        return fail("OPENAI_STATUS_" + std::to_string(status));
+        std::string error_payload;
+        try {
+            const auto error_json = nlohmann::json::parse(body);
+            error_payload = error_json.dump();
+        } catch (...) {
+            error_payload.clear();
+        }
+        return fail("OPENAI_STATUS_" + std::to_string(status), body, error_payload);
     }
 
     nlohmann::json parsed;
@@ -106,13 +130,14 @@ ProviderCaptureResult post_openai_responses(const std::string& payload, const st
         return fail("OPENAI_INVALID_JSON");
     }
 
-    if (!parsed.contains("output_text") || !parsed.at("output_text").is_string()) {
-        return fail("OPENAI_MISSING_OUTPUT_TEXT");
+    const std::string text = extract_output_text_from_responses_json(parsed);
+    if (text.empty()) {
+        return fail("OPENAI_MISSING_OUTPUT_TEXT", body, parsed.dump());
     }
 
     return ProviderCaptureResult{
         .ok = true,
-        .response_json = parsed.at("output_text").get<std::string>(),
+        .response_json = text,
         .raw_response_text = body,
         .error_code = ""
     };
@@ -148,7 +173,38 @@ ProviderCaptureResult capture_openai_response(const LlmRequest& request) {
         {"response_format", {{"type", "json_schema"}, {"json_schema", schema}}}
     };
 
-    return post_openai_responses(payload.dump(), key);
+    const auto result = post_openai_responses(payload.dump(), key);
+    if (!result.ok) {
+        log_provider_error(result);
+    }
+    return result;
+}
+
+std::string extract_output_text_from_responses_json(const nlohmann::json& parsed) {
+    if (parsed.contains("output") && parsed.at("output").is_array()) {
+        std::string out;
+        for (const auto& item : parsed.at("output")) {
+            if (!item.contains("content") || !item.at("content").is_array()) {
+                continue;
+            }
+            for (const auto& content : item.at("content")) {
+                if (content.contains("type") && content.at("type").is_string() &&
+                    content.at("type").get<std::string>() == "output_text" &&
+                    content.contains("text") && content.at("text").is_string()) {
+                    out += content.at("text").get<std::string>();
+                }
+            }
+        }
+        if (!out.empty()) {
+            return out;
+        }
+    }
+
+    if (parsed.contains("output_text") && parsed.at("output_text").is_string()) {
+        return parsed.at("output_text").get<std::string>();
+    }
+
+    return {};
 }
 
 }  // namespace proteus::llm::openai

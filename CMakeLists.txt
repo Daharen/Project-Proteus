@@ -81,6 +81,7 @@ add_executable(proteus_tests
     tests/test_query_identity.cpp
     tests/test_behavior_aggregation_determinism.cpp
     tests/test_llm_bootstrap.cpp
+    tests/test_openai_responses_client.cpp
     tests/responders/test_response_envelope.cpp
     tests/responders/test_response_validation.cpp
     tests/integration/test_responder_rerun_stability.cpp
