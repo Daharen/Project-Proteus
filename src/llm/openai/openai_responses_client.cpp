@@ -151,33 +151,38 @@ ProviderCaptureResult capture_openai_response(const LlmRequest& request) {
         return fail("OPENAI_API_KEY_MISSING");
     }
 
-    nlohmann::json schema = {
-        {"name", request.schema_name},
-        {"strict", true},
-        {"schema", {
-            {"type", "object"},
-            {"properties", {
-                {"normalized_query_text", {{"type", "string"}}},
-                {"intent_tags", {{"type", "array"}, {"items", {{"type", "string"}}}}},
-                {"synopsis", {{"type", "string"}}},
-                {"proposals", {{"type", "array"}}},
-                {"safety_flags", {{"type", "array"}, {"items", {{"type", "string"}}}}}
-            }},
-            {"required", nlohmann::json::array({"normalized_query_text", "intent_tags", "synopsis", "proposals", "safety_flags"})}
-        }}
-    };
-
-    nlohmann::json payload = {
-        {"model", request.model},
-        {"input", request.prompt_text},
-        {"text", {{"format", {{"type", "json_schema"}, {"name", "proteus_funnel_bootstrap_v1"}, {"json_schema", schema}}}}}
-    };
+    const auto payload = build_openai_responses_payload(request);
 
     const auto result = post_openai_responses(payload.dump(), key);
     if (!result.ok) {
         log_provider_error(result);
     }
     return result;
+}
+
+nlohmann::json build_openai_responses_payload(const LlmRequest& request) {
+    const nlohmann::json schema = {
+        {"type", "object"},
+        {"properties", {
+            {"normalized_query_text", {{"type", "string"}}},
+            {"intent_tags", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+            {"synopsis", {{"type", "string"}}},
+            {"proposals", {{"type", "array"}}},
+            {"safety_flags", {{"type", "array"}, {"items", {{"type", "string"}}}}}
+        }},
+        {"required", nlohmann::json::array({"normalized_query_text", "intent_tags", "synopsis", "proposals", "safety_flags"})}
+    };
+
+    return nlohmann::json{
+        {"model", request.model},
+        {"input", request.prompt_text},
+        {"text", {{"format", {
+            {"type", "json_schema"},
+            {"name", "proteus_funnel_bootstrap_v1"},
+            {"strict", true},
+            {"schema", schema}
+        }}}}
+    };
 }
 
 std::string extract_output_text_from_responses_json(const nlohmann::json& parsed) {
