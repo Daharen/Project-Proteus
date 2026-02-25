@@ -1,5 +1,7 @@
 #pragma once
 
+#include "proteus/bootstrap/bootstrap_category.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -39,7 +41,8 @@ std::string SerializeRejectCode(CandidateSemanticRejectCode code);
 
 CandidateSemanticValidationResult ValidateCandidateSetDeterministic(
     const std::vector<CandidateSemanticItem>& candidates,
-    const std::string& query_intent
+    const std::string& query_intent,
+    bootstrap::BootstrapCategory category
 );
 
 }  // namespace proteus::semantic

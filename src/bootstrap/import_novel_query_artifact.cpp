@@ -86,9 +86,10 @@ bool UpsertNpcFromCandidate(persistence::SqliteDb& db, std::int64_t query_id, co
     return true;
 }
 
-bool ImportBootstrapArtifactForDomain(persistence::SqliteDb& db, const std::string&, const std::string&, const std::string& raw_query_text, query::QueryDomain query_domain, const std::string& artifact_json, std::int64_t schema_version, ImportValidationFeedback* feedback) {
+bool ImportBootstrapArtifactForDomain(persistence::SqliteDb& db, const std::string&, const std::string&, const std::string& raw_query_text, query::QueryDomain query_domain, const std::string& artifact_json, std::int64_t schema_version, BootstrapCategory bootstrap_category, ImportValidationFeedback* feedback) {
     nlohmann::json artifact;
     try { artifact = nlohmann::json::parse(artifact_json); } catch (...) { return false; }
+    artifact["bootstrap_category"] = static_cast<double>(static_cast<std::int64_t>(bootstrap_category));
 
     const auto& contract = GetDimensionContractForDomain(query_domain);
     std::vector<std::string> issues;
@@ -172,8 +173,8 @@ bool ImportBootstrapArtifactForDomain(persistence::SqliteDb& db, const std::stri
     return true;
 }
 
-bool ImportNovelQueryArtifact(persistence::SqliteDb& db, const std::string& stable_player_id, const std::string& session_id, const std::string& raw_query_text, const std::string& artifact_json, std::int64_t schema_version, ImportValidationFeedback* feedback) {
-    return ImportBootstrapArtifactForDomain(db, stable_player_id, session_id, raw_query_text, query::QueryDomain::Generic, artifact_json, schema_version, feedback);
+bool ImportNovelQueryArtifact(persistence::SqliteDb& db, const std::string& stable_player_id, const std::string& session_id, const std::string& raw_query_text, const std::string& artifact_json, std::int64_t schema_version, BootstrapCategory bootstrap_category, ImportValidationFeedback* feedback) {
+    return ImportBootstrapArtifactForDomain(db, stable_player_id, session_id, raw_query_text, query::QueryDomain::Generic, artifact_json, schema_version, bootstrap_category, feedback);
 }
 
 }  // namespace proteus::bootstrap

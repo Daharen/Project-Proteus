@@ -47,7 +47,8 @@ void AssertAllObjectNodesClosed(const nlohmann::json& node) {
 TEST(CandidateSemanticValidatorTest, SneakFamilyDeterministicallyRejected) {
     const auto result = proteus::semantic::ValidateCandidateSetDeterministic(
         MakeItems({"Sneak", "Sneaker", "Sneaking", "Sneaks", "Sneakster"}),
-        "rogue stealth"
+        "rogue stealth",
+        proteus::bootstrap::BootstrapCategory::BOOTSTRAP_CATEGORY_CHARACTER_CLASS_TITLES_V1
     );
     EXPECT_EQ(result.ok, false);
     EXPECT_GT(result.rejections.size(), 0);
@@ -56,7 +57,8 @@ TEST(CandidateSemanticValidatorTest, SneakFamilyDeterministicallyRejected) {
 TEST(CandidateSemanticValidatorTest, DistinctSetPasses) {
     const auto result = proteus::semantic::ValidateCandidateSetDeterministic(
         MakeItems({"Rogue", "Assassin", "Shadow", "Spy", "Illusionist"}),
-        "stealth class"
+        "stealth class",
+        proteus::bootstrap::BootstrapCategory::BOOTSTRAP_CATEGORY_CHARACTER_CLASS_TITLES_V1
     );
     EXPECT_EQ(result.ok, true);
     EXPECT_EQ(result.rejections.empty(), true);
@@ -64,8 +66,8 @@ TEST(CandidateSemanticValidatorTest, DistinctSetPasses) {
 
 TEST(CandidateSemanticValidatorTest, RerunDeterminism) {
     const auto input = MakeItems({"Sneak", "Sneaker", "Sneaking", "Sneaks", "Sneakster"});
-    const auto first = proteus::semantic::ValidateCandidateSetDeterministic(input, "sneak");
-    const auto second = proteus::semantic::ValidateCandidateSetDeterministic(input, "sneak");
+    const auto first = proteus::semantic::ValidateCandidateSetDeterministic(input, "sneak", proteus::bootstrap::BootstrapCategory::BOOTSTRAP_CATEGORY_CHARACTER_CLASS_TITLES_V1);
+    const auto second = proteus::semantic::ValidateCandidateSetDeterministic(input, "sneak", proteus::bootstrap::BootstrapCategory::BOOTSTRAP_CATEGORY_CHARACTER_CLASS_TITLES_V1);
     ASSERT_EQ(first.rejections.size(), second.rejections.size());
     EXPECT_EQ(first.normalized_labels, second.normalized_labels);
     for (std::size_t i = 0; i < first.rejections.size(); ++i) {
@@ -78,7 +80,8 @@ TEST(CandidateSemanticValidatorTest, RerunDeterminism) {
 TEST(CandidateSemanticValidatorTest, EchoRejected) {
     const auto result = proteus::semantic::ValidateCandidateSetDeterministic(
         MakeItems({"Assassin", "Rogue", "Scout"}),
-        "Assassin"
+        "Assassin",
+        proteus::bootstrap::BootstrapCategory::BOOTSTRAP_CATEGORY_CHARACTER_CLASS_TITLES_V1
     );
     EXPECT_EQ(result.ok, false);
     bool saw_echo = false;
@@ -94,7 +97,7 @@ TEST(CandidateSemanticValidatorTest, RationaleSanityRejected) {
         {"Assassin", "Assassin"},
         {"Shadow", "stealth operator"},
     };
-    const auto result = proteus::semantic::ValidateCandidateSetDeterministic(items, "stealth");
+    const auto result = proteus::semantic::ValidateCandidateSetDeterministic(items, "stealth", proteus::bootstrap::BootstrapCategory::BOOTSTRAP_CATEGORY_CHARACTER_CLASS_TITLES_V1);
     EXPECT_EQ(result.ok, false);
 }
 

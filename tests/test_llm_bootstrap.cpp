@@ -93,9 +93,9 @@ TEST(LlmBootstrapTest, ImportAppliesDeterministicStringCaps) {
         auto& db = test_db.db();
 
         const std::string long_text(500, 'z');
-        const std::string label_a = "A" + long_text;
-        const std::string label_b = "B" + long_text;
-        const std::string label_c = "C" + long_text;
+        const std::string label_a = "Alpha";
+        const std::string label_b = "Beta";
+        const std::string label_c = "Gamma";
         const std::string artifact =
             "{\"normalized_query_text\":\"caps\",\"intent_tags\":[\"" + long_text + "\",\"" + long_text + "\",\"" + long_text + "\",\"" + long_text + "\",\"" + long_text + "\",\"" + long_text + "\",\"" + long_text + "\"],"
             "\"synopsis\":\"" + long_text + "\",\"proposals\":[{\"proposal_id\":\"p1\",\"proposal_kind\":1,\"proposal_title\":\"" + long_text + "\",\"proposal_body\":\"" + long_text + "\",\"proposal_json\":{\"mode\":\"candidate_set\",\"name\":\"" + label_a + "\",\"short_rationale\":\"valid\"}},{\"proposal_id\":\"p2\",\"proposal_kind\":1,\"proposal_title\":\"" + long_text + "\",\"proposal_body\":\"" + long_text + "\",\"proposal_json\":{\"mode\":\"candidate_set\",\"name\":\"" + label_b + "\",\"short_rationale\":\"valid\"}},{\"proposal_id\":\"p3\",\"proposal_kind\":1,\"proposal_title\":\"" + long_text + "\",\"proposal_body\":\"" + long_text + "\",\"proposal_json\":{\"mode\":\"candidate_set\",\"name\":\"" + label_c + "\",\"short_rationale\":\"valid\"}}],\"safety_flags\":[]}";

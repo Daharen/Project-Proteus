@@ -55,6 +55,9 @@ jobs:
           if (-not (Select-String -Path "tests/test_candidate_semantic_validator.cpp" -Pattern "kCandidateNormalizationVersion" -Quiet)) {
             throw "Normalization version guard missing from tests"
           }
+          if (Select-String -Path "src/bootstrap/bootstrap_category.cpp" -Pattern "prompt_text" -Quiet) {
+            throw "Control-plane purity violated: bootstrap_category routing references prompt_text"
+          }
 
       - name: Run self test harness
         run: .\build\Release\proteus.exe --serve --dev --self_test

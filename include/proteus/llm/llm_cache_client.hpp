@@ -34,7 +34,8 @@ LlmRequest BuildDeterministicRequest(
     std::int64_t schema_version,
     const std::string& prompt_text,
     LlmRequestKind request_kind = LlmRequestKind::Generic,
-    bootstrap::DimensionKind dimension_kind = static_cast<bootstrap::DimensionKind>(-1)
+    bootstrap::DimensionKind dimension_kind = static_cast<bootstrap::DimensionKind>(-1),
+    bootstrap::BootstrapCategory bootstrap_category = bootstrap::BootstrapCategory::BOOTSTRAP_CATEGORY_UNSPECIFIED_V1
 );
 
 }  // namespace proteus::llm

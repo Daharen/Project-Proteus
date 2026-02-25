@@ -1,5 +1,6 @@
 #pragma once
 
+#include "proteus/bootstrap/bootstrap_category.hpp"
 #include "proteus/persistence/sqlite_db.hpp"
 #include "proteus/query/query_identity.hpp"
 
@@ -31,6 +32,7 @@ bool ImportBootstrapArtifactForDomain(
     query::QueryDomain query_domain,
     const std::string& artifact_json,
     std::int64_t schema_version,
+    BootstrapCategory bootstrap_category = BootstrapCategory::BOOTSTRAP_CATEGORY_UNSPECIFIED_V1,
     ImportValidationFeedback* feedback = nullptr
 );
 
@@ -41,6 +43,7 @@ bool ImportNovelQueryArtifact(
     const std::string& raw_query_text,
     const std::string& artifact_json,
     std::int64_t schema_version,
+    BootstrapCategory bootstrap_category = BootstrapCategory::BOOTSTRAP_CATEGORY_UNSPECIFIED_V1,
     ImportValidationFeedback* feedback = nullptr
 );
 

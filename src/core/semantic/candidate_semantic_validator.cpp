@@ -33,6 +33,74 @@ constexpr std::array<std::pair<const char*, const char*>, 10> kLightStemTable = 
     {"thieves", "thief"},
 }};
 
+
+constexpr std::array<const char*, 6> kCharacterClassBannedLabels = {{
+    "owner",
+    "pet owner",
+    "caretaker",
+    "handler",
+    "guardian",
+    "pet guardian",
+}};
+
+bool IsTitleCaseLabel(const std::string& label) {
+    bool new_word = true;
+    for (char c : label) {
+        if (c == ' ') {
+            new_word = true;
+            continue;
+        }
+        if (new_word) {
+            if (!(c >= 'A' && c <= 'Z')) {
+                return false;
+            }
+            new_word = false;
+        } else if (!(c >= 'a' && c <= 'z')) {
+            return false;
+        }
+    }
+    return !label.empty();
+}
+
+std::size_t WordCount(const std::string& input) {
+    std::size_t count = 0;
+    bool in_word = false;
+    for (char c : input) {
+        if (c == ' ') {
+            in_word = false;
+            continue;
+        }
+        if (!in_word) {
+            ++count;
+            in_word = true;
+        }
+    }
+    return count;
+}
+
+bool ContainsOnlyLettersAndSpaces(const std::string& input) {
+    for (char c : input) {
+        if (c == ' ') {
+            continue;
+        }
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))) {
+            return false;
+        }
+    }
+    return !input.empty();
+}
+
+bool IsBannedForCategory(const std::string& normalized_label, bootstrap::BootstrapCategory category) {
+    if (category != bootstrap::BootstrapCategory::BOOTSTRAP_CATEGORY_CHARACTER_CLASS_TITLES_V1) {
+        return false;
+    }
+    for (const auto* banned : kCharacterClassBannedLabels) {
+        if (normalized_label == banned) {
+            return true;
+        }
+    }
+    return false;
+}
 bool IsAsciiWhitespace(char c) {
     return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
 }
@@ -200,7 +268,8 @@ std::string SerializeRejectCode(CandidateSemanticRejectCode code) {
 
 CandidateSemanticValidationResult ValidateCandidateSetDeterministic(
     const std::vector<CandidateSemanticItem>& candidates,
-    const std::string& query_intent
+    const std::string& query_intent,
+    bootstrap::BootstrapCategory category
 ) {
     CandidateSemanticValidationResult result;
     result.normalized_labels.reserve(candidates.size());
@@ -217,6 +286,20 @@ CandidateSemanticValidationResult ValidateCandidateSetDeterministic(
             normalized_rationale == result.normalized_labels[i] ||
             LooksDefinitional(result.normalized_labels[i], normalized_rationale) ||
             (!normalized_intent.empty() && normalized_rationale == normalized_intent)) {
+            result.ok = false;
+            result.rejections.push_back(CandidateSemanticRejection{CandidateSemanticRejectCode::SEMANTIC_OVERLAP_V1, i, i});
+        }
+
+        if (candidates[i].label.size() > 32 ||
+            !ContainsOnlyLettersAndSpaces(candidates[i].label) ||
+            WordCount(candidates[i].label) < 1 ||
+            WordCount(candidates[i].label) > 3 ||
+            !IsTitleCaseLabel(candidates[i].label)) {
+            result.ok = false;
+            result.rejections.push_back(CandidateSemanticRejection{CandidateSemanticRejectCode::SEMANTIC_OVERLAP_V1, i, i});
+        }
+
+        if (IsBannedForCategory(result.normalized_labels[i], category)) {
             result.ok = false;
             result.rejections.push_back(CandidateSemanticRejection{CandidateSemanticRejectCode::SEMANTIC_OVERLAP_V1, i, i});
         }

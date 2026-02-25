@@ -63,6 +63,7 @@ nlohmann::json build_envelope_schema(const nlohmann::json& proposal_item_schema)
             {"normalized_query_text", {{"type", "string"}}},
             {"intent_tags", {{"type", "array"}, {"items", {{"type", "string"}}}}},
             {"synopsis", {{"type", "string"}}},
+            {"bootstrap_category", {{"type", "integer"}}},
             {"proposals", {{"type", "array"}, {"items", proposal_item_schema}}},
             {"safety_flags", {{"type", "array"}, {"items", {{"type", "string"}}}}}
         }},
@@ -135,7 +136,10 @@ bool validate_candidate_set(const nlohmann::json& artifact, std::vector<std::str
     const std::string typed_intent = artifact.contains("normalized_query_text") && artifact.at("normalized_query_text").is_string()
         ? artifact.at("normalized_query_text").get<std::string>()
         : std::string{};
-    const auto semantic_result = semantic::ValidateCandidateSetDeterministic(candidates, typed_intent);
+    const auto category = artifact.contains("bootstrap_category") && artifact.at("bootstrap_category").is_number()
+        ? static_cast<BootstrapCategory>(static_cast<std::int64_t>(artifact.at("bootstrap_category").get<double>()))
+        : BootstrapCategory::BOOTSTRAP_CATEGORY_UNSPECIFIED_V1;
+    const auto semantic_result = semantic::ValidateCandidateSetDeterministic(candidates, typed_intent, category);
     if (!semantic_result.ok) {
         for (const auto& rejection : semantic_result.rejections) {
             issues.push_back(semantic::SerializeRejectCode(rejection.code));
@@ -199,7 +203,7 @@ nlohmann::json candidate_proposal_schema() {
                 {"type", "object"},
                 {"properties", {
                     {"mode", {{"type", "string"}, {"enum", nlohmann::json::array({"candidate_set"})}}},
-                    {"name", {{"type", "string"}}},
+                    {"name", {{"type", "string"}, {"pattern", "^[A-Za-z]+(?: [A-Za-z]+){0,2}$"}, {"maxLength", 32}}},
                     {"short_rationale", {{"type", "string"}, {"maxLength", 120}}}
                 }},
                 {"required", nlohmann::json::array({"mode", "name", "short_rationale"})}

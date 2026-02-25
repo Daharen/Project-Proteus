@@ -8,6 +8,8 @@
 #include "proteus/llm/llm_cache_client.hpp"
 #include "proteus/bootstrap/import_novel_query_artifact.hpp"
 #include "proteus/bootstrap/dimension_contract_registry.hpp"
+#include "proteus/bootstrap/bootstrap_category.hpp"
+#include "core/funnel/bootstrap_prompt_composer.h"
 
 #include <nlohmann/json.hpp>
 
@@ -60,6 +62,20 @@ llm::LlmMode parse_llm_mode_from_request(const nlohmann::json& body) {
     return llm::LlmMode::Offline;
 }
 
+
+std::vector<std::string> parse_bootstrap_context_tokens(const nlohmann::json& body) {
+    std::vector<std::string> out;
+    if (!body.contains("context_tokens") || !body.at("context_tokens").is_array()) {
+        return out;
+    }
+    for (const auto& token : body.at("context_tokens")) {
+        if (token.is_string()) {
+            out.push_back(token.get<std::string>());
+        }
+    }
+    return out;
+}
+
 query::QueryDomain parse_query_domain(const std::string& v) {
     if (v == "class") return query::QueryDomain::Class;
     if (v == "skill") return query::QueryDomain::Skill;
@@ -70,29 +86,6 @@ query::QueryDomain parse_query_domain(const std::string& v) {
 }
 
 
-std::string build_semantic_repair_prompt(const std::vector<std::string>& reject_codes) {
-    nlohmann::json constraints = {
-        {"normalization_version", 1},
-        {"rules", nlohmann::json::array({
-            "unique_normalized_labels",
-            "no_near_duplicates",
-            "no_query_echo",
-            "short_rationale_required_max_120",
-            "candidate_object_additional_properties_false"
-        })}
-    };
-    nlohmann::json reject_codes_json = nlohmann::json::array({});
-    for (const auto& code : reject_codes) {
-        reject_codes_json.push_back(code);
-    }
-    nlohmann::json payload = {
-        {"type", "SEMANTIC_REPAIR_V1"},
-        {"reject_codes", reject_codes_json},
-        {"constraints", constraints},
-    };
-    return payload.dump();
-}
-
 bool import_with_single_semantic_retry(
     persistence::SqliteDb& db,
     const std::string& stable_player_id,
@@ -100,6 +93,7 @@ bool import_with_single_semantic_retry(
     const std::string& raw_prompt,
     query::QueryDomain domain,
     const llm::LlmRequest& base_request,
+    bootstrap::BootstrapCategory bootstrap_category,
     llm::LlmMode mode,
     llm::LlmCacheClient& llm_client,
     const llm::LlmArtifactResult& first_artifact,
@@ -115,6 +109,7 @@ bool import_with_single_semantic_retry(
         domain,
         first_artifact.artifact_json,
         1,
+        bootstrap_category,
         &feedback
     )) {
         out_status = first_artifact.status == llm::LlmArtifactStatus::CacheHit ? "cache_hit" : "captured_and_cached";
@@ -133,9 +128,10 @@ bool import_with_single_semantic_retry(
         base_request.model,
         base_request.schema_name,
         base_request.schema_version,
-        build_semantic_repair_prompt(feedback.reject_codes),
+        funnel::BuildSemanticRepairInstruction(bootstrap_category, feedback.reject_codes),
         base_request.request_kind,
-        base_request.dimension_kind
+        base_request.dimension_kind,
+        bootstrap_category
     );
 
     const auto retry_artifact = llm_client.TryGetOrCaptureArtifact(db, retry_request, mode);
@@ -149,6 +145,7 @@ bool import_with_single_semantic_retry(
             domain,
             retry_artifact.artifact_json,
             1,
+            bootstrap_category,
             &retry_feedback
         )) {
             out_status = "captured_and_cached";
@@ -635,14 +632,20 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
         if (!bootstrap::QueryHasBootstrapProposals(db, query_id, domain)) {
             llm::LlmCacheClient llm_client;
             const auto& contract = bootstrap::GetDimensionContractForDomain(domain);
-            const auto prompt_text = bootstrap::BuildBootstrapPromptForDimension(contract.kind, raw_prompt);
-            const auto request = llm::BuildDeterministicRequest("openai", "gpt-4.1-mini", "proteus_funnel_bootstrap_v1", 1, prompt_text, llm::LlmRequestKind::BootstrapFunnel, contract.kind);
+            const auto bootstrap_category = bootstrap::ResolveBootstrapCategory(bootstrap::BootstrapRoute::FunnelBootstrapV1, domain);
+            const auto prompt_text = funnel::ComposeBootstrapPrompt(funnel::BootstrapPromptTypedContext{
+                .bootstrap_category = bootstrap_category,
+                .schema_version = 1,
+                .candidate_count = funnel::kBootstrapPromptCandidateCount,
+                .context_tokens = parse_bootstrap_context_tokens(body)
+            });
+            const auto request = llm::BuildDeterministicRequest("openai", "gpt-4.1-mini", "proteus_funnel_bootstrap_v1", 1, prompt_text, llm::LlmRequestKind::BootstrapFunnel, contract.kind, bootstrap_category);
             const auto mode = parse_llm_mode_from_request(body);
             const auto artifact_result = llm_client.TryGetOrCaptureArtifact(db, request, mode);
             if (artifact_result.status == llm::LlmArtifactStatus::CacheHit || artifact_result.status == llm::LlmArtifactStatus::CapturedAndCached) {
                 bool hard_failed = false;
                 std::string status;
-                import_with_single_semantic_retry(db, "", "", raw_prompt, domain, request, mode, llm_client, artifact_result, status, hard_failed);
+                import_with_single_semantic_retry(db, "", "", raw_prompt, domain, request, request.bootstrap_category, mode, llm_client, artifact_result, status, hard_failed);
                 payload["status"] = status;
                 if (hard_failed) {
                     payload["ok"] = false;
@@ -716,20 +719,28 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
         if (!has_bootstrap) {
             llm::LlmCacheClient llm_client;
             const auto mode = parse_llm_mode();
+            const auto bootstrap_category = bootstrap::ResolveBootstrapCategory(bootstrap::BootstrapRoute::QueryBootstrapV1, query::QueryDomain::Generic);
+            const auto prompt_text = funnel::ComposeBootstrapPrompt(funnel::BootstrapPromptTypedContext{
+                .bootstrap_category = bootstrap_category,
+                .schema_version = 1,
+                .candidate_count = funnel::kBootstrapPromptCandidateCount,
+                .context_tokens = parse_bootstrap_context_tokens(body)
+            });
             const auto request = llm::BuildDeterministicRequest(
                 "openai",
                 "gpt-4.1-mini",
                 "proteus_funnel_bootstrap_v1",
                 1,
-                raw_prompt,
+                prompt_text,
                 llm::LlmRequestKind::BootstrapFunnel,
-                bootstrap::DimensionKind::Class
+                bootstrap::DimensionKind::Class,
+                bootstrap_category
             );
             const auto artifact_result = llm_client.TryGetOrCaptureArtifact(db, request, mode);
             if (artifact_result.status == llm::LlmArtifactStatus::CacheHit || artifact_result.status == llm::LlmArtifactStatus::CapturedAndCached) {
                 bool hard_failed = false;
                 std::string status;
-                import_with_single_semantic_retry(db, stable_player_id, session_id, raw_prompt, query::QueryDomain::Generic, request, mode, llm_client, artifact_result, status, hard_failed);
+                import_with_single_semantic_retry(db, stable_player_id, session_id, raw_prompt, query::QueryDomain::Generic, request, request.bootstrap_category, mode, llm_client, artifact_result, status, hard_failed);
                 bootstrap_payload["status"] = status;
                 if (hard_failed) {
                     bootstrap_payload["ok"] = false;
