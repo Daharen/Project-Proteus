@@ -20,6 +20,24 @@ ProviderCaptureResult fail(std::string code, std::string raw_response_text = {},
     };
 }
 
+bool env_truthy(const char* name) {
+    const char* value = std::getenv(name);
+    if (value == nullptr) {
+        return false;
+    }
+
+    const std::string text(value);
+    return text == "1" || text == "true" || text == "TRUE" || text == "yes" || text == "on";
+}
+
+bool should_log_openai_payload() {
+#if defined(PROTEUS_DEV_LOG_HTTP)
+    return true;
+#else
+    return env_truthy("PROTEUS_DEV_MODE") || env_truthy("PROTEUS_DEV_LOG_HTTP");
+#endif
+}
+
 void log_provider_error(const ProviderCaptureResult& result) {
     std::cerr << "OpenAI responses call failed: error_code=" << result.error_code;
     if (!result.response_json.empty()) {
@@ -60,16 +78,21 @@ ProviderCaptureResult post_openai_responses(const std::string& payload, const st
         return fail("OPENAI_HTTP_ERROR");
     }
 
-    std::ostringstream request;
-    request << "POST /v1/responses HTTP/1.1\r\n";
-    request << "Host: api.openai.com\r\n";
-    request << "Authorization: Bearer " << api_key << "\r\n";
-    request << "Content-Type: application/json\r\n";
-    request << "Content-Length: " << payload.size() << "\r\n";
-    request << "Connection: close\r\n\r\n";
-    request << payload;
+    const std::string request_body = payload;
 
-    const std::string request_text = request.str();
+    std::ostringstream headers;
+    headers << "POST /v1/responses HTTP/1.1\r\n";
+    headers << "Host: api.openai.com\r\n";
+    headers << "Authorization: Bearer " << api_key << "\r\n";
+    headers << "Content-Type: application/json\r\n";
+    headers << "Content-Length: " << request_body.size() << "\r\n";
+    headers << "Connection: close\r\n\r\n";
+
+    if (should_log_openai_payload()) {
+        std::cerr << "OPENAI_RESponses_PAYLOAD=" << request_body << "\n";
+    }
+
+    const std::string request_text = headers.str() + request_body;
     if (BIO_write(bio, request_text.data(), static_cast<int>(request_text.size())) <= 0) {
         BIO_free_all(bio);
         SSL_CTX_free(ctx);

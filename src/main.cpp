@@ -337,6 +337,10 @@ int main(int argc, char** argv) {
     try {
         const CliArgs args = parse_args(argc, argv);
 
+        if (args.dev_mode) {
+            setenv("PROTEUS_DEV_MODE", "1", 0);
+        }
+
         if (args.mode == CliMode::Help) {
             print_help();
             return 0;
