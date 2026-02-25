@@ -35,6 +35,9 @@ add_library(proteus_core
     src/llm/llm_cache_client.cpp
     src/bootstrap/import_novel_query_artifact.cpp
     src/bootstrap/dimension_contract_registry.cpp
+    src/core/funnel/bootstrap_prompt_composer.cpp
+    src/bootstrap/bootstrap_category.cpp
+    src/core/semantic/candidate_semantic_validator.cpp
     src/proteus/responders/response_envelope.cpp
     src/proteus/responders/response_validation.cpp
     src/proteus/responders/responder_manager.cpp
@@ -83,6 +86,8 @@ add_executable(proteus_tests
     tests/test_behavior_aggregation_determinism.cpp
     tests/test_llm_bootstrap.cpp
     tests/test_openai_responses_client.cpp
+    tests/test_candidate_semantic_validator.cpp
+    tests/test_bootstrap_prompt_composer.cpp
     tests/responders/test_response_envelope.cpp
     tests/responders/test_response_validation.cpp
     tests/integration/test_responder_rerun_stability.cpp

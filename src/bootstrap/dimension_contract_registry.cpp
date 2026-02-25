@@ -1,4 +1,5 @@
 #include "proteus/bootstrap/dimension_contract_registry.hpp"
+#include "core/semantic/candidate_semantic_validator.h"
 
 #include <algorithm>
 #include <array>
@@ -62,10 +63,11 @@ nlohmann::json build_envelope_schema(const nlohmann::json& proposal_item_schema)
             {"normalized_query_text", {{"type", "string"}}},
             {"intent_tags", {{"type", "array"}, {"items", {{"type", "string"}}}}},
             {"synopsis", {{"type", "string"}}},
+            {"bootstrap_category", {{"type", "integer"}}},
             {"proposals", {{"type", "array"}, {"items", proposal_item_schema}}},
             {"safety_flags", {{"type", "array"}, {"items", {{"type", "string"}}}}}
         }},
-        {"required", nlohmann::json::array({"normalized_query_text", "intent_tags", "synopsis", "proposals", "safety_flags"})}
+        {"required", nlohmann::json::array({"normalized_query_text", "intent_tags", "synopsis", "bootstrap_category", "proposals", "safety_flags"})}
     };
 }
 
@@ -91,6 +93,9 @@ bool validate_candidate_set(const nlohmann::json& artifact, std::vector<std::str
         return false;
     }
 
+    std::vector<semantic::CandidateSemanticItem> candidates;
+    candidates.reserve(artifact.at("proposals").size());
+
     for (const auto& p : artifact.at("proposals")) {
         if (!p.is_object()) {
             issues.push_back("Each proposal must be an object");
@@ -109,6 +114,10 @@ bool validate_candidate_set(const nlohmann::json& artifact, std::vector<std::str
             issues.push_back("candidate_set requires proposal_json.name");
             return false;
         }
+        if (!pj.contains("short_rationale") || !pj.at("short_rationale").is_string()) {
+            issues.push_back("candidate_set requires proposal_json.short_rationale");
+            return false;
+        }
         const std::string name = pj.at("name").get<std::string>();
         if (name.empty()) {
             issues.push_back("candidate_set proposal_json.name is required");
@@ -118,6 +127,24 @@ bool validate_candidate_set(const nlohmann::json& artifact, std::vector<std::str
             issues.push_back("candidate_set names must be short labels, not definitions");
             return false;
         }
+        candidates.push_back(semantic::CandidateSemanticItem{
+            .label = name,
+            .short_rationale = pj.at("short_rationale").get<std::string>(),
+        });
+    }
+
+    const std::string typed_intent = artifact.contains("normalized_query_text") && artifact.at("normalized_query_text").is_string()
+        ? artifact.at("normalized_query_text").get<std::string>()
+        : std::string{};
+    const auto category = artifact.contains("bootstrap_category") && artifact.at("bootstrap_category").is_number()
+        ? static_cast<BootstrapCategory>(static_cast<std::int64_t>(artifact.at("bootstrap_category").get<double>()))
+        : BootstrapCategory::BOOTSTRAP_CATEGORY_UNSPECIFIED_V1;
+    const auto semantic_result = semantic::ValidateCandidateSetDeterministic(candidates, typed_intent, category);
+    if (!semantic_result.ok) {
+        for (const auto& rejection : semantic_result.rejections) {
+            issues.push_back(semantic::SerializeRejectCode(rejection.code));
+        }
+        return false;
     }
     return true;
 }
@@ -176,9 +203,10 @@ nlohmann::json candidate_proposal_schema() {
                 {"type", "object"},
                 {"properties", {
                     {"mode", {{"type", "string"}, {"enum", nlohmann::json::array({"candidate_set"})}}},
-                    {"name", {{"type", "string"}}}
+                    {"name", {{"type", "string"}, {"pattern", "^[A-Za-z]+(?: [A-Za-z]+){0,2}$"}, {"maxLength", 32}}},
+                    {"short_rationale", {{"type", "string"}, {"maxLength", 120}}}
                 }},
-                {"required", nlohmann::json::array({"mode", "name"})}
+                {"required", nlohmann::json::array({"mode", "name", "short_rationale"})}
             }}
         }},
         {"required", nlohmann::json::array({"proposal_id", "proposal_kind", "proposal_title", "proposal_body", "proposal_json"})}
@@ -260,17 +288,21 @@ const DimensionContract& GetDimensionContractForDomain(query::QueryDomain domain
 }
 
 std::string BuildBootstrapPromptForDimension(DimensionKind kind, const std::string& raw_prompt) {
+    const std::string capped_raw = raw_prompt.size() <= 512 ? raw_prompt : raw_prompt.substr(0, 512);
     if (kind == DimensionKind::Dialogue) {
-        return "Dimension: dialogue. Generate 3-5 in-character dialogue options. Prohibit lore dumps and definitions. "
+        return "DIMENSION=DIALOGUE_V1\nCATEGORY=BOOTSTRAP_CATEGORY_TRAIT_PERK_TITLES_V1\nRAW_PROMPT=\"" + capped_raw + "\"\n"
+               "Dimension: dialogue. Generate 3-5 in-character dialogue options. Prohibit lore dumps and definitions. "
                "Each option must have a distinct intent_tag where possible. Keep each utterance concise and playable. "
-               "Return strict JSON using proposal_json.mode=dialogue_options. User query: " + raw_prompt;
+               "Return strict JSON using proposal_json.mode=dialogue_options.";
     }
     if (kind == DimensionKind::Skill) {
-        return "Dimension: skill. Generate 3-5 candidate names only. Prohibit definitions and explanations. "
-               "Use short names. Return strict JSON using proposal_json.mode=candidate_set. User query: " + raw_prompt;
+        return "DIMENSION=SKILL_V1\nCATEGORY=BOOTSTRAP_CATEGORY_SKILL_NAME_TITLES_V1\nRAW_PROMPT=\"" + capped_raw + "\"\n"
+               "Dimension: skill. Generate 3-5 candidate names only. Prohibit definitions and explanations. "
+               "Use short names. Return strict JSON using proposal_json.mode=candidate_set.";
     }
-    return "Dimension: class. Generate 3-5 candidate names only. Prohibit definitions and explanations. "
-           "Use short names. Return strict JSON using proposal_json.mode=candidate_set. User query: " + raw_prompt;
+    return "DIMENSION=CLASS_V1\nCATEGORY=BOOTSTRAP_CATEGORY_CHARACTER_CLASS_TITLES_V1\nRAW_PROMPT=\"" + capped_raw + "\"\n"
+           "Dimension: class. Generate 3-5 candidate names only. Prohibit definitions and explanations. "
+           "Use short names. Return strict JSON using proposal_json.mode=candidate_set.";
 }
 
 }  // namespace proteus::bootstrap

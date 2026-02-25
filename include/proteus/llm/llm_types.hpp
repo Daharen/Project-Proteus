@@ -1,5 +1,6 @@
 #pragma once
 
+#include "proteus/bootstrap/bootstrap_category.hpp"
 #include "proteus/bootstrap/dimension_contract_registry.hpp"
 
 #include <cstdint>
@@ -28,6 +29,7 @@ enum class LlmRequestKind : std::int64_t {
 struct LlmRequest {
     LlmRequestKind request_kind = LlmRequestKind::Generic;
     bootstrap::DimensionKind dimension_kind = static_cast<bootstrap::DimensionKind>(-1);
+    bootstrap::BootstrapCategory bootstrap_category = bootstrap::BootstrapCategory::BOOTSTRAP_CATEGORY_UNSPECIFIED_V1;
     std::string provider;
     std::string model;
     std::string schema_name;
