@@ -32,7 +32,9 @@ LlmRequest BuildDeterministicRequest(
     const std::string& model,
     const std::string& schema_name,
     std::int64_t schema_version,
-    const std::string& prompt_text
+    const std::string& prompt_text,
+    LlmRequestKind request_kind = LlmRequestKind::Generic,
+    bootstrap::DimensionKind dimension_kind = static_cast<bootstrap::DimensionKind>(-1)
 );
 
 }  // namespace proteus::llm

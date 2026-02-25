@@ -9,7 +9,6 @@ namespace {
 
 nlohmann::json build_envelope_schema(const nlohmann::json& proposal_item_schema) {
     return nlohmann::json{
-        {"name", "proteus_funnel_bootstrap_v1"},
         {"type", "object"},
         {"properties", {
             {"normalized_query_text", {{"type", "string"}}},
@@ -198,16 +197,6 @@ const DimensionContract& GetDimensionContractForDomain(query::QueryDomain domain
         return GetDimensionContract(DimensionKind::Dialogue);
     }
     return GetDimensionContract(DimensionKind::Class);
-}
-
-DimensionKind DimensionKindFromSchemaName(const std::string& schema_name) {
-    if (schema_name == "proteus_bootstrap_skill_v1") {
-        return DimensionKind::Skill;
-    }
-    if (schema_name == "proteus_bootstrap_dialogue_options_v1") {
-        return DimensionKind::Dialogue;
-    }
-    return DimensionKind::Class;
 }
 
 std::string BuildBootstrapPromptForDimension(DimensionKind kind, const std::string& raw_prompt) {

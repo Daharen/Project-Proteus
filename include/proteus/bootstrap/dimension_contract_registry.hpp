@@ -25,6 +25,8 @@ using JsonSchemaBuilderFn = nlohmann::json (*)();
 using SemanticValidatorFn = bool (*)(const nlohmann::json&, std::vector<std::string>& issues);
 
 struct DimensionContract {
+    // Invariant: for bootstrap requests, payload naming is locked to kBootstrapSchemaName
+    // in the OpenAI client; contract.schema_name is for non-bootstrap flows only.
     DimensionKind kind = DimensionKind::Class;
     const char* schema_name = "proteus_funnel_bootstrap_v1";
     JsonSchemaBuilderFn json_schema_builder = nullptr;
@@ -43,7 +45,6 @@ bool ValidateBootstrapArtifact_DialogueOptions(const nlohmann::json& artifact, s
 const DimensionContract& GetDimensionContract(DimensionKind kind);
 const DimensionContract& GetDimensionContractForDomain(query::QueryDomain domain);
 
-DimensionKind DimensionKindFromSchemaName(const std::string& schema_name);
 std::string BuildBootstrapPromptForDimension(DimensionKind kind, const std::string& raw_prompt);
 
 }  // namespace proteus::bootstrap

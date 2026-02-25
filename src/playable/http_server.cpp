@@ -542,7 +542,7 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
             llm::LlmCacheClient llm_client;
             const auto& contract = bootstrap::GetDimensionContractForDomain(domain);
             const auto prompt_text = bootstrap::BuildBootstrapPromptForDimension(contract.kind, raw_prompt);
-            const auto request = llm::BuildDeterministicRequest("openai", "gpt-4.1-mini", contract.schema_name, 1, prompt_text);
+            const auto request = llm::BuildDeterministicRequest("openai", "gpt-4.1-mini", "proteus_funnel_bootstrap_v1", 1, prompt_text, llm::LlmRequestKind::BootstrapFunnel, contract.kind);
             const auto artifact_result = llm_client.TryGetOrCaptureArtifact(db, request, parse_llm_mode_from_request(body));
             if (artifact_result.status == llm::LlmArtifactStatus::CacheHit || artifact_result.status == llm::LlmArtifactStatus::CapturedAndCached) {
                 if (bootstrap::ImportBootstrapArtifactForDomain(db, "", "", raw_prompt, domain, artifact_result.artifact_json, 1)) {
@@ -622,9 +622,11 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
             const auto request = llm::BuildDeterministicRequest(
                 "openai",
                 "gpt-4.1-mini",
-                "proteus_novel_query_bootstrap",
+                "proteus_funnel_bootstrap_v1",
                 1,
-                raw_prompt
+                raw_prompt,
+                llm::LlmRequestKind::BootstrapFunnel,
+                bootstrap::DimensionKind::Class
             );
             const auto artifact_result = llm_client.TryGetOrCaptureArtifact(db, request, mode);
             if (artifact_result.status == llm::LlmArtifactStatus::CacheHit || artifact_result.status == llm::LlmArtifactStatus::CapturedAndCached) {

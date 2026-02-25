@@ -1,5 +1,7 @@
 #pragma once
 
+#include "proteus/bootstrap/dimension_contract_registry.hpp"
+
 #include <cstdint>
 #include <string>
 
@@ -18,7 +20,14 @@ enum class LlmArtifactStatus {
     ValidationFailed,
 };
 
+enum class LlmRequestKind : std::int64_t {
+    Generic = 0,
+    BootstrapFunnel = 1,
+};
+
 struct LlmRequest {
+    LlmRequestKind request_kind = LlmRequestKind::Generic;
+    bootstrap::DimensionKind dimension_kind = static_cast<bootstrap::DimensionKind>(-1);
     std::string provider;
     std::string model;
     std::string schema_name;

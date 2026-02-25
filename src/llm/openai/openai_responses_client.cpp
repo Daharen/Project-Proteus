@@ -13,6 +13,8 @@
 namespace proteus::llm::openai {
 namespace {
 
+static constexpr const char* kBootstrapSchemaName = "proteus_funnel_bootstrap_v1";
+
 ProviderCaptureResult fail(std::string code, std::string raw_response_text = {}, std::string response_json = {}) {
     return ProviderCaptureResult{
         .ok = false,
@@ -162,24 +164,42 @@ ProviderCaptureResult capture_openai_response(const LlmRequest& request) {
     return result;
 }
 
+// Invariants:
+// - Control-plane routing must never derive from request.prompt_text.
+// - Bootstrap schema name is locked to kBootstrapSchemaName regardless of dimension.
 nlohmann::json build_openai_responses_payload(const LlmRequest& request) {
-    auto kind = bootstrap::DimensionKindFromSchemaName(request.schema_name);
-    if (request.prompt_text.find("Dimension: dialogue") != std::string::npos || request.prompt_text.find("proposal_json.mode=dialogue_options") != std::string::npos) {
-        kind = bootstrap::DimensionKind::Dialogue;
-    } else if (request.prompt_text.find("Dimension: skill") != std::string::npos) {
-        kind = bootstrap::DimensionKind::Skill;
-    } else if (request.prompt_text.find("Dimension: class") != std::string::npos) {
-        kind = bootstrap::DimensionKind::Class;
+    nlohmann::json schema;
+    std::string format_name = request.schema_name;
+
+    if (request.request_kind == LlmRequestKind::BootstrapFunnel) {
+        if (request.dimension_kind != bootstrap::DimensionKind::Class &&
+            request.dimension_kind != bootstrap::DimensionKind::Skill &&
+            request.dimension_kind != bootstrap::DimensionKind::Dialogue) {
+            throw std::runtime_error("OPENAI_BOOTSTRAP_DIMENSION_KIND_INVALID");
+        }
+        const auto& contract = bootstrap::GetDimensionContract(request.dimension_kind);
+        schema = contract.json_schema_builder();
+        format_name = kBootstrapSchemaName;
+    } else {
+        schema = nlohmann::json{
+            {"type", "object"},
+            {"properties", {
+                {"normalized_query_text", {{"type", "string"}}},
+                {"intent_tags", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+                {"synopsis", {{"type", "string"}}},
+                {"proposals", {{"type", "array"}}},
+                {"safety_flags", {{"type", "array"}, {"items", {{"type", "string"}}}}}
+            }},
+            {"required", nlohmann::json::array({"normalized_query_text", "intent_tags", "synopsis", "proposals", "safety_flags"})}
+        };
     }
-    const auto& contract = bootstrap::GetDimensionContract(kind);
-    nlohmann::json schema = contract.json_schema_builder();
 
     return nlohmann::json{
         {"model", request.model},
         {"input", request.prompt_text},
         {"text", {{"format", {
             {"type", "json_schema"},
-            {"name", contract.schema_name},
+            {"name", format_name},
             {"strict", true},
             {"schema", schema}
         }}}}

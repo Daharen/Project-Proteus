@@ -1,5 +1,6 @@
 #include "proteus/bootstrap/import_novel_query_artifact.hpp"
 #include "proteus/llm/llm_cache_client.hpp"
+#include "proteus/llm/openai/openai_responses_client.hpp"
 #include "test_db_raii.hpp"
 
 #include <gtest/gtest.h>
@@ -17,7 +18,7 @@ TEST(LlmBootstrapTest, OfflineCacheMissIsDeterministicAndNoRowsWritten) {
         proteus::tests::TestSqliteDbFile test_db("offline_cache_miss");
         auto& db = test_db.db();
 
-        const auto request = proteus::llm::BuildDeterministicRequest("openai", "gpt-4.1-mini", "proteus_funnel_bootstrap_v1", 1, "novel query text");
+        const auto request = proteus::llm::BuildDeterministicRequest("openai", "gpt-4.1-mini", "proteus_funnel_bootstrap_v1", 1, "novel query text", proteus::llm::LlmRequestKind::BootstrapFunnel, proteus::bootstrap::DimensionKind::Class);
         proteus::llm::LlmCacheClient client;
         const auto result = client.TryGetOrCaptureArtifact(db, request, proteus::llm::LlmMode::Offline);
         EXPECT_EQ(result.status, proteus::llm::LlmArtifactStatus::CacheMissOffline);
@@ -33,7 +34,7 @@ TEST(LlmBootstrapTest, CacheReplayIsByteIdentical) {
         proteus::tests::TestSqliteDbFile test_db("cache_replay");
         auto& db = test_db.db();
 
-        const auto request = proteus::llm::BuildDeterministicRequest("openai", "gpt-4.1-mini", "proteus_funnel_bootstrap_v1", 1, "fixed prompt");
+        const auto request = proteus::llm::BuildDeterministicRequest("openai", "gpt-4.1-mini", "proteus_funnel_bootstrap_v1", 1, "fixed prompt", proteus::llm::LlmRequestKind::BootstrapFunnel, proteus::bootstrap::DimensionKind::Class);
         const std::string artifact = R"({"normalized_query_text":"fixed prompt","intent_tags":["tag1"],"synopsis":"A synopsis","proposals":[{"proposal_id":"p1","proposal_kind":1,"proposal_title":"A","proposal_body":"B","proposal_json":{"mode":"candidate_set","name":"A"}},{"proposal_id":"p2","proposal_kind":1,"proposal_title":"C","proposal_body":"D","proposal_json":{"mode":"candidate_set","name":"C"}},{"proposal_id":"p3","proposal_kind":1,"proposal_title":"E","proposal_body":"F","proposal_json":{"mode":"candidate_set","name":"E"}}],"safety_flags":[]})";
 
         auto ins = db.prepare(
@@ -154,7 +155,7 @@ TEST(LlmBootstrapTest, DialogueProposalIdsStableAcrossReruns) {
 TEST(LlmBootstrapTest, OfflineMissDoesNotMutateBootstrapTables) {
     proteus::tests::TestSqliteDbFile test_db("offline_nomutate");
     auto& db = test_db.db();
-    const auto request = proteus::llm::BuildDeterministicRequest("openai", "gpt-4.1-mini", "proteus_funnel_bootstrap_v1", 1, "brand new class");
+    const auto request = proteus::llm::BuildDeterministicRequest("openai", "gpt-4.1-mini", "proteus_funnel_bootstrap_v1", 1, "brand new class", proteus::llm::LlmRequestKind::BootstrapFunnel, proteus::bootstrap::DimensionKind::Class);
     proteus::llm::LlmCacheClient client;
     const auto r = client.TryGetOrCaptureArtifact(db, request, proteus::llm::LlmMode::Offline);
     ASSERT_EQ(r.status, proteus::llm::LlmArtifactStatus::CacheMissOffline);
@@ -162,4 +163,23 @@ TEST(LlmBootstrapTest, OfflineMissDoesNotMutateBootstrapTables) {
     auto m = db.prepare("SELECT COUNT(*) FROM query_metadata;"); ASSERT_EQ(m.step(), true); EXPECT_EQ(m.column_int64(0), 0);
     auto pcount = db.prepare("SELECT COUNT(*) FROM query_bootstrap_proposals;"); ASSERT_EQ(pcount.step(), true); EXPECT_EQ(pcount.column_int64(0), 0);
     auto n = db.prepare("SELECT COUNT(*) FROM npc_registry;"); ASSERT_EQ(n.step(), true); EXPECT_EQ(n.column_int64(0), 0);
+}
+
+
+TEST(LlmBootstrapTest, ExplicitDimensionOverridesPromptTextHints) {
+    const auto request = proteus::llm::BuildDeterministicRequest(
+        "openai",
+        "gpt-4.1-mini",
+        "proteus_funnel_bootstrap_v1",
+        1,
+        "Dimension: dialogue but this must not route schema",
+        proteus::llm::LlmRequestKind::BootstrapFunnel,
+        proteus::bootstrap::DimensionKind::Class
+    );
+
+    const auto payload = proteus::llm::openai::build_openai_responses_payload(request);
+    const auto schema_dump = payload.at("text").at("format").at("schema").dump();
+    EXPECT_EQ(payload.at("text").at("format").at("name").get<std::string>(), "proteus_funnel_bootstrap_v1");
+    EXPECT_EQ(schema_dump.find("candidate_set") != std::string::npos, true);
+    EXPECT_EQ(schema_dump.find("dialogue_options") == std::string::npos, true);
 }

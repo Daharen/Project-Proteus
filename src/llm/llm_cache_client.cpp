@@ -45,9 +45,13 @@ LlmRequest BuildDeterministicRequest(
     const std::string& model,
     const std::string& schema_name,
     std::int64_t schema_version,
-    const std::string& prompt_text
+    const std::string& prompt_text,
+    LlmRequestKind request_kind,
+    bootstrap::DimensionKind dimension_kind
 ) {
     nlohmann::json request = {
+        {"request_kind", static_cast<double>(static_cast<std::int64_t>(request_kind))},
+        {"dimension_kind", static_cast<double>(static_cast<std::int64_t>(dimension_kind))},
         {"provider", provider},
         {"model", model},
         {"schema_name", schema_name},
@@ -55,6 +59,8 @@ LlmRequest BuildDeterministicRequest(
         {"prompt_text", prompt_text}
     };
     return LlmRequest{
+        .request_kind = request_kind,
+        .dimension_kind = dimension_kind,
         .provider = provider,
         .model = model,
         .schema_name = schema_name,
