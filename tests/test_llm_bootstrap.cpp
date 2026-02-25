@@ -35,7 +35,7 @@ TEST(LlmBootstrapTest, CacheReplayIsByteIdentical) {
         auto& db = test_db.db();
 
         const auto request = proteus::llm::BuildDeterministicRequest("openai", "gpt-4.1-mini", "proteus_funnel_bootstrap_v1", 1, "fixed prompt", proteus::llm::LlmRequestKind::BootstrapFunnel, proteus::bootstrap::DimensionKind::Class);
-        const std::string artifact = R"({"normalized_query_text":"fixed prompt","intent_tags":["tag1"],"synopsis":"A synopsis","proposals":[{"proposal_id":"p1","proposal_kind":1,"proposal_title":"A","proposal_body":"B","proposal_json":{"mode":"candidate_set","name":"A"}},{"proposal_id":"p2","proposal_kind":1,"proposal_title":"C","proposal_body":"D","proposal_json":{"mode":"candidate_set","name":"C"}},{"proposal_id":"p3","proposal_kind":1,"proposal_title":"E","proposal_body":"F","proposal_json":{"mode":"candidate_set","name":"E"}}],"safety_flags":[]})";
+        const std::string artifact = R"({"normalized_query_text":"fixed prompt","intent_tags":["tag1"],"synopsis":"A synopsis","proposals":[{"proposal_id":"p1","proposal_kind":1,"proposal_title":"A","proposal_body":"B","proposal_json":{"mode":"candidate_set","name":"A","short_rationale":"stealth option"}},{"proposal_id":"p2","proposal_kind":1,"proposal_title":"C","proposal_body":"D","proposal_json":{"mode":"candidate_set","name":"C","short_rationale":"fast option"}},{"proposal_id":"p3","proposal_kind":1,"proposal_title":"E","proposal_body":"F","proposal_json":{"mode":"candidate_set","name":"E","short_rationale":"safe option"}}],"safety_flags":[]})";
 
         auto ins = db.prepare(
             "INSERT INTO llm_response_cache(created_at_utc, provider, model, schema_name, schema_version, prompt_hash, request_json, response_json, response_sha256, raw_response_text, raw_response_text_trunc, error_code) "
@@ -66,7 +66,7 @@ TEST(LlmBootstrapTest, ImportDeterminismProposalIdsStableAcrossReruns) {
         proteus::tests::TestSqliteDbFile test_db("import_det");
         auto& db = test_db.db();
 
-        const std::string artifact = R"({"normalized_query_text":"where healer","intent_tags":["healer","quest"],"synopsis":"Seek healer herbs around temples.","proposals":[{"proposal_id":"p1","proposal_kind":1,"proposal_title":"Temple","proposal_body":"Ask priests.","proposal_json":{"mode":"candidate_set","name":"Temple"}},{"proposal_id":"p2","proposal_kind":1,"proposal_title":"Forest","proposal_body":"Search glades.","proposal_json":{"mode":"candidate_set","name":"Forest"}},{"proposal_id":"p3","proposal_kind":1,"proposal_title":"Bandit","proposal_body":"Loot caches.","proposal_json":{"mode":"candidate_set","name":"Bandit"}}],"safety_flags":[]})";
+        const std::string artifact = R"({"normalized_query_text":"where healer","intent_tags":["healer","quest"],"synopsis":"Seek healer herbs around temples.","proposals":[{"proposal_id":"p1","proposal_kind":1,"proposal_title":"Temple","proposal_body":"Ask priests.","proposal_json":{"mode":"candidate_set","name":"Temple","short_rationale":"holy place"}},{"proposal_id":"p2","proposal_kind":1,"proposal_title":"Forest","proposal_body":"Search glades.","proposal_json":{"mode":"candidate_set","name":"Forest","short_rationale":"wild route"}},{"proposal_id":"p3","proposal_kind":1,"proposal_title":"Bandit","proposal_body":"Loot caches.","proposal_json":{"mode":"candidate_set","name":"Bandit","short_rationale":"danger path"}}],"safety_flags":[]})";
 
         ASSERT_EQ(proteus::bootstrap::ImportNovelQueryArtifact(db, "player_B", "session_1", "Where healer herbs?", artifact, 1), true);
         std::vector<std::string> first_ids;
@@ -93,9 +93,12 @@ TEST(LlmBootstrapTest, ImportAppliesDeterministicStringCaps) {
         auto& db = test_db.db();
 
         const std::string long_text(500, 'z');
+        const std::string label_a = "A" + long_text;
+        const std::string label_b = "B" + long_text;
+        const std::string label_c = "C" + long_text;
         const std::string artifact =
             "{\"normalized_query_text\":\"caps\",\"intent_tags\":[\"" + long_text + "\",\"" + long_text + "\",\"" + long_text + "\",\"" + long_text + "\",\"" + long_text + "\",\"" + long_text + "\",\"" + long_text + "\"],"
-            "\"synopsis\":\"" + long_text + "\",\"proposals\":[{\"proposal_id\":\"p1\",\"proposal_kind\":1,\"proposal_title\":\"" + long_text + "\",\"proposal_body\":\"" + long_text + "\",\"proposal_json\":{\"mode\":\"candidate_set\",\"name\":\"" + long_text + "\"}},{\"proposal_id\":\"p2\",\"proposal_kind\":1,\"proposal_title\":\"" + long_text + "\",\"proposal_body\":\"" + long_text + "\",\"proposal_json\":{\"mode\":\"candidate_set\",\"name\":\"" + long_text + "\"}},{\"proposal_id\":\"p3\",\"proposal_kind\":1,\"proposal_title\":\"" + long_text + "\",\"proposal_body\":\"" + long_text + "\",\"proposal_json\":{\"mode\":\"candidate_set\",\"name\":\"" + long_text + "\"}}],\"safety_flags\":[]}";
+            "\"synopsis\":\"" + long_text + "\",\"proposals\":[{\"proposal_id\":\"p1\",\"proposal_kind\":1,\"proposal_title\":\"" + long_text + "\",\"proposal_body\":\"" + long_text + "\",\"proposal_json\":{\"mode\":\"candidate_set\",\"name\":\"" + label_a + "\",\"short_rationale\":\"valid\"}},{\"proposal_id\":\"p2\",\"proposal_kind\":1,\"proposal_title\":\"" + long_text + "\",\"proposal_body\":\"" + long_text + "\",\"proposal_json\":{\"mode\":\"candidate_set\",\"name\":\"" + label_b + "\",\"short_rationale\":\"valid\"}},{\"proposal_id\":\"p3\",\"proposal_kind\":1,\"proposal_title\":\"" + long_text + "\",\"proposal_body\":\"" + long_text + "\",\"proposal_json\":{\"mode\":\"candidate_set\",\"name\":\"" + label_c + "\",\"short_rationale\":\"valid\"}}],\"safety_flags\":[]}";
 
         ASSERT_EQ(proteus::bootstrap::ImportNovelQueryArtifact(db, "player_B", "session_2", "caps input", artifact, 1), true);
 
@@ -127,7 +130,7 @@ TEST(LlmBootstrapTest, DbHandleClosesAndFileIsDeletable) {
 TEST(LlmBootstrapTest, NpcIdIsStableAcrossReruns) {
     proteus::tests::TestSqliteDbFile test_db("npc_id_stable");
     auto& db = test_db.db();
-    const std::string artifact = R"({"normalized_query_text":"find smith","intent_tags":["smith"],"synopsis":"Find a smith.","proposals":[{"proposal_id":"n1","proposal_kind":3,"proposal_title":"Borin","proposal_body":"Blacksmith","proposal_json":{"mode":"candidate_set","name":"Borin"}},{"proposal_id":"n2","proposal_kind":3,"proposal_title":"Mira","proposal_body":"Alchemist","proposal_json":{"mode":"candidate_set","name":"Mira"}},{"proposal_id":"n3","proposal_kind":3,"proposal_title":"Tarn","proposal_body":"Captain","proposal_json":{"mode":"candidate_set","name":"Tarn"}}],"safety_flags":[]})";
+    const std::string artifact = R"({"normalized_query_text":"find smith","intent_tags":["smith"],"synopsis":"Find a smith.","proposals":[{"proposal_id":"n1","proposal_kind":3,"proposal_title":"Borin","proposal_body":"Blacksmith","proposal_json":{"mode":"candidate_set","name":"Borin","short_rationale":"forge expert"}},{"proposal_id":"n2","proposal_kind":3,"proposal_title":"Mira","proposal_body":"Alchemist","proposal_json":{"mode":"candidate_set","name":"Mira","short_rationale":"potion maker"}},{"proposal_id":"n3","proposal_kind":3,"proposal_title":"Tarn","proposal_body":"Captain","proposal_json":{"mode":"candidate_set","name":"Tarn","short_rationale":"city guard"}}],"safety_flags":[]})";
     ASSERT_EQ(proteus::bootstrap::ImportBootstrapArtifactForDomain(db, "p", "s", "find smith", proteus::query::QueryDomain::NpcIntent, artifact, 1), true);
 
     const auto qid = proteus::query::GetOrCreateQueryId(db, "find smith", proteus::query::QueryDomain::NpcIntent);

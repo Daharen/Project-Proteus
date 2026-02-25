@@ -38,6 +38,9 @@ nlohmann::json canonicalize_candidate_json(const nlohmann::json& proposal) {
     if (name.empty()) name = get_s(proposal, "proposal_title");
     if (name.empty()) name = get_s(proposal, "npc_name");
     out["name"] = cap(name, 32);
+    std::string rationale = get_s(proposal, "short_rationale");
+    if (rationale.empty()) rationale = get_s(proposal, "rationale");
+    out["short_rationale"] = cap(rationale, 120);
     return out;
 }
 
@@ -83,13 +86,17 @@ bool UpsertNpcFromCandidate(persistence::SqliteDb& db, std::int64_t query_id, co
     return true;
 }
 
-bool ImportBootstrapArtifactForDomain(persistence::SqliteDb& db, const std::string&, const std::string&, const std::string& raw_query_text, query::QueryDomain query_domain, const std::string& artifact_json, std::int64_t schema_version) {
+bool ImportBootstrapArtifactForDomain(persistence::SqliteDb& db, const std::string&, const std::string&, const std::string& raw_query_text, query::QueryDomain query_domain, const std::string& artifact_json, std::int64_t schema_version, ImportValidationFeedback* feedback) {
     nlohmann::json artifact;
     try { artifact = nlohmann::json::parse(artifact_json); } catch (...) { return false; }
 
     const auto& contract = GetDimensionContractForDomain(query_domain);
     std::vector<std::string> issues;
     if (contract.semantic_validator != nullptr && !contract.semantic_validator(artifact, issues)) {
+        if (feedback != nullptr) {
+            feedback->reject_codes = issues;
+            feedback->semantic_rejected = !issues.empty();
+        }
         return false;
     }
 
@@ -165,8 +172,8 @@ bool ImportBootstrapArtifactForDomain(persistence::SqliteDb& db, const std::stri
     return true;
 }
 
-bool ImportNovelQueryArtifact(persistence::SqliteDb& db, const std::string& stable_player_id, const std::string& session_id, const std::string& raw_query_text, const std::string& artifact_json, std::int64_t schema_version) {
-    return ImportBootstrapArtifactForDomain(db, stable_player_id, session_id, raw_query_text, query::QueryDomain::Generic, artifact_json, schema_version);
+bool ImportNovelQueryArtifact(persistence::SqliteDb& db, const std::string& stable_player_id, const std::string& session_id, const std::string& raw_query_text, const std::string& artifact_json, std::int64_t schema_version, ImportValidationFeedback* feedback) {
+    return ImportBootstrapArtifactForDomain(db, stable_player_id, session_id, raw_query_text, query::QueryDomain::Generic, artifact_json, schema_version, feedback);
 }
 
 }  // namespace proteus::bootstrap

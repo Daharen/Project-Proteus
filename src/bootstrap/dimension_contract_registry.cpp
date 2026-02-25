@@ -1,4 +1,5 @@
 #include "proteus/bootstrap/dimension_contract_registry.hpp"
+#include "core/semantic/candidate_semantic_validator.h"
 
 #include <algorithm>
 #include <array>
@@ -91,6 +92,9 @@ bool validate_candidate_set(const nlohmann::json& artifact, std::vector<std::str
         return false;
     }
 
+    std::vector<semantic::CandidateSemanticItem> candidates;
+    candidates.reserve(artifact.at("proposals").size());
+
     for (const auto& p : artifact.at("proposals")) {
         if (!p.is_object()) {
             issues.push_back("Each proposal must be an object");
@@ -109,6 +113,10 @@ bool validate_candidate_set(const nlohmann::json& artifact, std::vector<std::str
             issues.push_back("candidate_set requires proposal_json.name");
             return false;
         }
+        if (!pj.contains("short_rationale") || !pj.at("short_rationale").is_string()) {
+            issues.push_back("candidate_set requires proposal_json.short_rationale");
+            return false;
+        }
         const std::string name = pj.at("name").get<std::string>();
         if (name.empty()) {
             issues.push_back("candidate_set proposal_json.name is required");
@@ -118,6 +126,21 @@ bool validate_candidate_set(const nlohmann::json& artifact, std::vector<std::str
             issues.push_back("candidate_set names must be short labels, not definitions");
             return false;
         }
+        candidates.push_back(semantic::CandidateSemanticItem{
+            .label = name,
+            .short_rationale = pj.at("short_rationale").get<std::string>(),
+        });
+    }
+
+    const std::string typed_intent = artifact.contains("normalized_query_text") && artifact.at("normalized_query_text").is_string()
+        ? artifact.at("normalized_query_text").get<std::string>()
+        : std::string{};
+    const auto semantic_result = semantic::ValidateCandidateSetDeterministic(candidates, typed_intent);
+    if (!semantic_result.ok) {
+        for (const auto& rejection : semantic_result.rejections) {
+            issues.push_back(semantic::SerializeRejectCode(rejection.code));
+        }
+        return false;
     }
     return true;
 }
@@ -176,9 +199,10 @@ nlohmann::json candidate_proposal_schema() {
                 {"type", "object"},
                 {"properties", {
                     {"mode", {{"type", "string"}, {"enum", nlohmann::json::array({"candidate_set"})}}},
-                    {"name", {{"type", "string"}}}
+                    {"name", {{"type", "string"}}},
+                    {"short_rationale", {{"type", "string"}, {"maxLength", 120}}}
                 }},
-                {"required", nlohmann::json::array({"mode", "name"})}
+                {"required", nlohmann::json::array({"mode", "name", "short_rationale"})}
             }}
         }},
         {"required", nlohmann::json::array({"proposal_id", "proposal_kind", "proposal_title", "proposal_body", "proposal_json"})}

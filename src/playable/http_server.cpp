@@ -69,6 +69,100 @@ query::QueryDomain parse_query_domain(const std::string& v) {
     return query::QueryDomain::Generic;
 }
 
+
+std::string build_semantic_repair_prompt(const std::vector<std::string>& reject_codes) {
+    nlohmann::json constraints = {
+        {"normalization_version", 1},
+        {"rules", nlohmann::json::array({
+            "unique_normalized_labels",
+            "no_near_duplicates",
+            "no_query_echo",
+            "short_rationale_required_max_120",
+            "candidate_object_additional_properties_false"
+        })}
+    };
+    nlohmann::json reject_codes_json = nlohmann::json::array({});
+    for (const auto& code : reject_codes) {
+        reject_codes_json.push_back(code);
+    }
+    nlohmann::json payload = {
+        {"type", "SEMANTIC_REPAIR_V1"},
+        {"reject_codes", reject_codes_json},
+        {"constraints", constraints},
+    };
+    return payload.dump();
+}
+
+bool import_with_single_semantic_retry(
+    persistence::SqliteDb& db,
+    const std::string& stable_player_id,
+    const std::string& session_id,
+    const std::string& raw_prompt,
+    query::QueryDomain domain,
+    const llm::LlmRequest& base_request,
+    llm::LlmMode mode,
+    llm::LlmCacheClient& llm_client,
+    const llm::LlmArtifactResult& first_artifact,
+    std::string& out_status,
+    bool& out_hard_failed
+) {
+    bootstrap::ImportValidationFeedback feedback;
+    if (bootstrap::ImportBootstrapArtifactForDomain(
+        db,
+        stable_player_id,
+        session_id,
+        raw_prompt,
+        domain,
+        first_artifact.artifact_json,
+        1,
+        &feedback
+    )) {
+        out_status = first_artifact.status == llm::LlmArtifactStatus::CacheHit ? "cache_hit" : "captured_and_cached";
+        out_hard_failed = false;
+        return true;
+    }
+
+    if (mode != llm::LlmMode::OnlineCapture || !feedback.semantic_rejected) {
+        out_status = "validation_failed";
+        out_hard_failed = false;
+        return false;
+    }
+
+    const auto retry_request = llm::BuildDeterministicRequest(
+        base_request.provider,
+        base_request.model,
+        base_request.schema_name,
+        base_request.schema_version,
+        build_semantic_repair_prompt(feedback.reject_codes),
+        base_request.request_kind,
+        base_request.dimension_kind
+    );
+
+    const auto retry_artifact = llm_client.TryGetOrCaptureArtifact(db, retry_request, mode);
+    if (retry_artifact.status == llm::LlmArtifactStatus::CacheHit || retry_artifact.status == llm::LlmArtifactStatus::CapturedAndCached) {
+        bootstrap::ImportValidationFeedback retry_feedback;
+        if (bootstrap::ImportBootstrapArtifactForDomain(
+            db,
+            stable_player_id,
+            session_id,
+            raw_prompt,
+            domain,
+            retry_artifact.artifact_json,
+            1,
+            &retry_feedback
+        )) {
+            out_status = "captured_and_cached";
+            out_hard_failed = false;
+            return true;
+        }
+    }
+
+    std::cerr << "SEMANTIC_REPAIR_FAILED_V1" << "\n";
+    out_status = "semantic_repair_failed";
+    out_hard_failed = true;
+    return false;
+}
+
 nlohmann::json load_bootstrap_proposals(persistence::SqliteDb& db, std::int64_t query_id, query::QueryDomain query_domain) {
     auto stmt = db.prepare(
         "SELECT proposal_id, proposal_kind, proposal_json, proposal_title, proposal_body "
@@ -543,12 +637,15 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
             const auto& contract = bootstrap::GetDimensionContractForDomain(domain);
             const auto prompt_text = bootstrap::BuildBootstrapPromptForDimension(contract.kind, raw_prompt);
             const auto request = llm::BuildDeterministicRequest("openai", "gpt-4.1-mini", "proteus_funnel_bootstrap_v1", 1, prompt_text, llm::LlmRequestKind::BootstrapFunnel, contract.kind);
-            const auto artifact_result = llm_client.TryGetOrCaptureArtifact(db, request, parse_llm_mode_from_request(body));
+            const auto mode = parse_llm_mode_from_request(body);
+            const auto artifact_result = llm_client.TryGetOrCaptureArtifact(db, request, mode);
             if (artifact_result.status == llm::LlmArtifactStatus::CacheHit || artifact_result.status == llm::LlmArtifactStatus::CapturedAndCached) {
-                if (bootstrap::ImportBootstrapArtifactForDomain(db, "", "", raw_prompt, domain, artifact_result.artifact_json, 1)) {
-                    payload["status"] = artifact_result.status == llm::LlmArtifactStatus::CacheHit ? "cache_hit" : "captured_and_cached";
-                } else {
-                    payload["status"] = "validation_failed";
+                bool hard_failed = false;
+                std::string status;
+                import_with_single_semantic_retry(db, "", "", raw_prompt, domain, request, mode, llm_client, artifact_result, status, hard_failed);
+                payload["status"] = status;
+                if (hard_failed) {
+                    payload["ok"] = false;
                 }
             } else if (artifact_result.status == llm::LlmArtifactStatus::CacheMissOffline) {
                 payload["status"] = "offline_cache_miss";
@@ -630,10 +727,12 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
             );
             const auto artifact_result = llm_client.TryGetOrCaptureArtifact(db, request, mode);
             if (artifact_result.status == llm::LlmArtifactStatus::CacheHit || artifact_result.status == llm::LlmArtifactStatus::CapturedAndCached) {
-                if (bootstrap::ImportNovelQueryArtifact(db, stable_player_id, session_id, raw_prompt, artifact_result.artifact_json, 1)) {
-                    bootstrap_payload["status"] = artifact_result.status == llm::LlmArtifactStatus::CacheHit ? "cache_hit" : "captured_and_cached";
-                } else {
-                    bootstrap_payload["status"] = "validation_failed";
+                bool hard_failed = false;
+                std::string status;
+                import_with_single_semantic_retry(db, stable_player_id, session_id, raw_prompt, query::QueryDomain::Generic, request, mode, llm_client, artifact_result, status, hard_failed);
+                bootstrap_payload["status"] = status;
+                if (hard_failed) {
+                    bootstrap_payload["ok"] = false;
                 }
             } else if (artifact_result.status == llm::LlmArtifactStatus::CacheMissOffline) {
                 bootstrap_payload["status"] = "offline_cache_miss";

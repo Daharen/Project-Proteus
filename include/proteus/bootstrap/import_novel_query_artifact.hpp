@@ -9,6 +9,12 @@
 
 namespace proteus::bootstrap {
 
+
+struct ImportValidationFeedback {
+    bool semantic_rejected = false;
+    std::vector<std::string> reject_codes;
+};
+
 enum class ProposalKind : std::int64_t {
     GenericArm = 0,
     ClassOption = 1,
@@ -24,7 +30,8 @@ bool ImportBootstrapArtifactForDomain(
     const std::string& raw_query_text,
     query::QueryDomain query_domain,
     const std::string& artifact_json,
-    std::int64_t schema_version
+    std::int64_t schema_version,
+    ImportValidationFeedback* feedback = nullptr
 );
 
 bool ImportNovelQueryArtifact(
@@ -33,7 +40,8 @@ bool ImportNovelQueryArtifact(
     const std::string& session_id,
     const std::string& raw_query_text,
     const std::string& artifact_json,
-    std::int64_t schema_version
+    std::int64_t schema_version,
+    ImportValidationFeedback* feedback = nullptr
 );
 
 bool QueryHasBootstrapProposals(
