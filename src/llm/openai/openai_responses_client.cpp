@@ -52,6 +52,8 @@ ProviderCaptureResult post_openai_responses(const std::string& payload, const st
         SSL_CTX_free(ctx);
         return fail("OPENAI_SSL_INIT_ERROR");
     }
+
+    // SNI must be just the hostname (not host:port)
     SSL_set_tlsext_host_name(ssl, "api.openai.com");
 
     if (BIO_do_connect(bio) <= 0) {
@@ -81,7 +83,7 @@ ProviderCaptureResult post_openai_responses(const std::string& payload, const st
     while (true) {
         const int bytes = BIO_read(bio, buffer, static_cast<int>(sizeof(buffer)));
         if (bytes > 0) {
-            raw_response.append(buffer, static_cast<size_t>(bytes));
+            raw_response.append(buffer, static_cast<std::size_t>(bytes));
             continue;
         }
         if (bytes == 0) {
@@ -108,10 +110,12 @@ ProviderCaptureResult post_openai_responses(const std::string& payload, const st
     std::istringstream status_stream(header_blob);
     std::string status_line;
     std::getline(status_stream, status_line);
+
     std::istringstream status_line_stream(status_line);
     std::string http_version;
     int status = 0;
     status_line_stream >> http_version >> status;
+
     if (status < 200 || status >= 300) {
         std::string error_payload;
         try {
@@ -127,7 +131,7 @@ ProviderCaptureResult post_openai_responses(const std::string& payload, const st
     try {
         parsed = nlohmann::json::parse(body);
     } catch (...) {
-        return fail("OPENAI_INVALID_JSON");
+        return fail("OPENAI_INVALID_JSON", body, {});
     }
 
     const std::string text = extract_output_text_from_responses_json(parsed);
@@ -161,31 +165,56 @@ ProviderCaptureResult capture_openai_response(const LlmRequest& request) {
 }
 
 nlohmann::json build_openai_responses_payload(const LlmRequest& request) {
+    // OpenAI Structured Outputs requirement:
+    // Every schema object must specify additionalProperties: false.
     const nlohmann::json schema = {
         {"type", "object"},
+        {"additionalProperties", false},
         {"properties", {
             {"normalized_query_text", {{"type", "string"}}},
-            {"intent_tags", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+            {"intent_tags", {
+                {"type", "array"},
+                {"items", {{"type", "string"}}}
+            }},
             {"synopsis", {{"type", "string"}}},
-            {"proposals", {{"type", "array"}}},
-            {"safety_flags", {{"type", "array"}, {"items", {{"type", "string"}}}}}
+            {"proposals", {
+                {"type", "array"},
+                {"items", {{"type", "string"}}}
+            }},
+            {"safety_flags", {
+                {"type", "array"},
+                {"items", {{"type", "string"}}}
+            }}
         }},
-        {"required", nlohmann::json::array({"normalized_query_text", "intent_tags", "synopsis", "proposals", "safety_flags"})}
+        {"required", nlohmann::json::array({
+            "normalized_query_text",
+            "intent_tags",
+            "synopsis",
+            "proposals",
+            "safety_flags"
+        })}
     };
+
+    // text.format.name is REQUIRED by the Responses API when using json_schema format.
+    const std::string schema_name =
+        (!request.schema_name.empty() ? request.schema_name : std::string("proteus_funnel_bootstrap_v1"));
 
     return nlohmann::json{
         {"model", request.model},
         {"input", request.prompt_text},
-        {"text", {{"format", {
-            {"type", "json_schema"},
-            {"name", "proteus_funnel_bootstrap_v1"},
-            {"strict", true},
-            {"schema", schema}
-        }}}}
+        {"text", {{
+            "format", {
+                {"type", "json_schema"},
+                {"name", schema_name},
+                {"strict", true},
+                {"schema", schema}
+            }
+        }}}
     };
 }
 
 std::string extract_output_text_from_responses_json(const nlohmann::json& parsed) {
+    // Preferred: output[].content[] where content items include {type:"output_text", text:"..."}
     if (parsed.contains("output") && parsed.at("output").is_array()) {
         std::string out;
         for (const auto& item : parsed.at("output")) {
@@ -205,6 +234,7 @@ std::string extract_output_text_from_responses_json(const nlohmann::json& parsed
         }
     }
 
+    // Fallback: some variants include top-level output_text
     if (parsed.contains("output_text") && parsed.at("output_text").is_string()) {
         return parsed.at("output_text").get<std::string>();
     }
