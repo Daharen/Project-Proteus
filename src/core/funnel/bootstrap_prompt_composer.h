@@ -1,6 +1,7 @@
 #pragma once
 
 #include "proteus/bootstrap/bootstrap_category.hpp"
+#include "proteus/bootstrap/dimension_contract_registry.hpp"
 
 #include <cstdint>
 #include <string>
@@ -13,6 +14,8 @@ constexpr std::int64_t kBootstrapPromptCandidateCount = 5;
 
 struct BootstrapPromptTypedContext {
     bootstrap::BootstrapCategory bootstrap_category = bootstrap::BootstrapCategory::BOOTSTRAP_CATEGORY_UNSPECIFIED_V1;
+    bootstrap::DimensionKind dimension_kind = static_cast<bootstrap::DimensionKind>(-1);
+    std::string raw_prompt;
     std::int64_t schema_version = 1;
     std::int64_t candidate_count = kBootstrapPromptCandidateCount;
     std::vector<std::string> context_tokens;
@@ -24,6 +27,9 @@ const char* CategoryInstructionBlockV1(bootstrap::BootstrapCategory category);
 std::string ComposeBootstrapPrompt(const BootstrapPromptTypedContext& context);
 std::string BuildSemanticRepairInstruction(
     bootstrap::BootstrapCategory category,
+    bootstrap::DimensionKind dimension_kind,
+    const std::string& raw_prompt,
+    const std::vector<std::string>& context_tokens,
     const std::vector<std::string>& reject_codes
 );
 

@@ -5,6 +5,11 @@
 #include "proteus/playable/retrieval_engine.hpp"
 #include "proteus/query/query_identity.hpp"
 #include "proteus/responders/responder_manager.h"
+#include "proteus/bootstrap/bootstrap_category.hpp"
+#include "proteus/bootstrap/dimension_contract_registry.hpp"
+#include "proteus/bootstrap/import_novel_query_artifact.hpp"
+#include "proteus/llm/llm_cache_client.hpp"
+#include "core/funnel/bootstrap_prompt_composer.h"
 
 #include <algorithm>
 #include <array>
@@ -30,6 +35,8 @@ enum class CliMode {
     RecomputeAggregates,
     InspectCluster,
     InspectPlayer,
+    RebootstrapQuery,
+    RebootstrapDomain,
     Help,
 };
 
@@ -57,6 +64,9 @@ struct CliArgs {
     int rounding_decimals = 9;
     std::int64_t inspect_query_id = -1;
     std::string inspect_player_id;
+    std::int64_t rebootstrap_query_id = -1;
+    bool rebootstrap_all = false;
+    std::string rebootstrap_domain;
 };
 
 std::string generate_session_uuid() {
@@ -81,6 +91,16 @@ std::string generate_session_uuid() {
     return std::string(out);
 }
 
+
+
+proteus::query::QueryDomain parse_query_domain_cli(const std::string& v) {
+    if (v == "class") return proteus::query::QueryDomain::Class;
+    if (v == "skill") return proteus::query::QueryDomain::Skill;
+    if (v == "npc_intent") return proteus::query::QueryDomain::NpcIntent;
+    if (v == "dialogue_line") return proteus::query::QueryDomain::DialogueLine;
+    if (v == "dialogue_option") return proteus::query::QueryDomain::DialogueOption;
+    return proteus::query::QueryDomain::Generic;
+}
 void print_help() {
     std::cout
         << "Usage:\n"
@@ -221,6 +241,20 @@ CliArgs parse_args(int argc, char** argv) {
             args.inspect_query_id = std::stoll(argv[++i]);
             continue;
         }
+
+        if (current == "--rebootstrap") {
+            args.mode = CliMode::RebootstrapQuery;
+            continue;
+        }
+        if (current == "--query_id" && i + 1 < argc) {
+            args.rebootstrap_query_id = std::stoll(argv[++i]);
+            continue;
+        }
+        if (current == "--all") {
+            args.rebootstrap_all = true;
+            args.mode = CliMode::RebootstrapDomain;
+            continue;
+        }
         if (current == "--inspect-player" && i + 1 < argc) {
             args.mode = CliMode::InspectPlayer;
             args.inspect_player_id = argv[++i];
@@ -235,6 +269,15 @@ CliArgs parse_args(int argc, char** argv) {
             continue;
         }
         throw std::runtime_error("Unknown or incomplete argument: " + current);
+    }
+
+    if (args.mode == CliMode::RebootstrapQuery || args.mode == CliMode::RebootstrapDomain) {
+        if (args.domain.empty()) {
+            throw std::runtime_error("--rebootstrap requires --domain");
+        }
+        if (!args.rebootstrap_all && args.rebootstrap_query_id <= 0) {
+            throw std::runtime_error("--rebootstrap requires --query_id or --all");
+        }
     }
 
     if (args.mode == CliMode::Help || args.serve_help) {
@@ -459,6 +502,70 @@ int main(int argc, char** argv) {
             for (std::size_t i = 0; i < top_n; ++i) {
                 std::cout << "  query_id=" << values[i].query_id << " value=" << values[i].value << "\n";
             }
+            return 0;
+        }
+
+
+        if (args.mode == CliMode::RebootstrapQuery || args.mode == CliMode::RebootstrapDomain) {
+            const auto domain = parse_query_domain_cli(args.domain);
+            const auto contract = proteus::bootstrap::GetDimensionContractForDomain(domain);
+            const auto category = proteus::bootstrap::ResolveBootstrapCategory(proteus::bootstrap::BootstrapRoute::QueryBootstrapV1, domain);
+
+            std::vector<std::int64_t> query_ids;
+            if (args.rebootstrap_all) {
+                auto q = db.prepare("SELECT query_id FROM query_registry WHERE query_domain = ?1 ORDER BY query_id ASC;");
+                q.bind_int64(1, static_cast<std::int64_t>(domain));
+                while (q.step()) {
+                    query_ids.push_back(q.column_int64(0));
+                }
+            } else {
+                query_ids.push_back(args.rebootstrap_query_id);
+            }
+
+            proteus::llm::LlmCacheClient llm_client;
+            std::size_t updated = 0;
+            for (const auto query_id : query_ids) {
+                auto qtext = db.prepare("SELECT raw_example FROM query_registry WHERE query_id = ?1 AND query_domain = ?2 LIMIT 1;");
+                qtext.bind_int64(1, query_id);
+                qtext.bind_int64(2, static_cast<std::int64_t>(domain));
+                if (!qtext.step()) {
+                    continue;
+                }
+                const std::string raw_prompt = qtext.column_text(0);
+
+                auto del = db.prepare("DELETE FROM query_bootstrap_proposals WHERE query_id = ?1 AND query_domain = ?2;");
+                del.bind_int64(1, query_id);
+                del.bind_int64(2, static_cast<std::int64_t>(domain));
+                del.step();
+
+                const auto prompt_text = proteus::funnel::ComposeBootstrapPrompt(proteus::funnel::BootstrapPromptTypedContext{
+                    .bootstrap_category = category,
+                    .dimension_kind = contract.kind,
+                    .raw_prompt = raw_prompt,
+                    .schema_version = 1,
+                    .candidate_count = proteus::funnel::kBootstrapPromptCandidateCount,
+                    .context_tokens = std::vector<std::string>{}
+                });
+
+                const auto request = proteus::llm::BuildDeterministicRequest(
+                    "openai",
+                    "gpt-4.1-mini",
+                    "proteus_funnel_bootstrap_v1",
+                    1,
+                    prompt_text,
+                    proteus::llm::LlmRequestKind::BootstrapFunnel,
+                    contract.kind,
+                    category
+                );
+                const auto artifact = llm_client.TryGetOrCaptureArtifact(db, request, proteus::llm::LlmMode::OnlineCapture);
+                if (artifact.status != proteus::llm::LlmArtifactStatus::CacheHit && artifact.status != proteus::llm::LlmArtifactStatus::CapturedAndCached) {
+                    continue;
+                }
+                if (proteus::bootstrap::ImportBootstrapArtifactForDomain(db, "", "", raw_prompt, domain, artifact.artifact_json, 1, category)) {
+                    ++updated;
+                }
+            }
+            std::cout << nlohmann::json{{"ok", true}, {"updated", static_cast<double>(updated)}}.dump(2) << "\n";
             return 0;
         }
 

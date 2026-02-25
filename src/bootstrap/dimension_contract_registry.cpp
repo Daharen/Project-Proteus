@@ -288,17 +288,21 @@ const DimensionContract& GetDimensionContractForDomain(query::QueryDomain domain
 }
 
 std::string BuildBootstrapPromptForDimension(DimensionKind kind, const std::string& raw_prompt) {
+    const std::string capped_raw = raw_prompt.size() <= 512 ? raw_prompt : raw_prompt.substr(0, 512);
     if (kind == DimensionKind::Dialogue) {
-        return "Dimension: dialogue. Generate 3-5 in-character dialogue options. Prohibit lore dumps and definitions. "
+        return "DIMENSION=DIALOGUE_V1\nCATEGORY=BOOTSTRAP_CATEGORY_TRAIT_PERK_TITLES_V1\nRAW_PROMPT=\"" + capped_raw + "\"\n"
+               "Dimension: dialogue. Generate 3-5 in-character dialogue options. Prohibit lore dumps and definitions. "
                "Each option must have a distinct intent_tag where possible. Keep each utterance concise and playable. "
-               "Return strict JSON using proposal_json.mode=dialogue_options. User query: " + raw_prompt;
+               "Return strict JSON using proposal_json.mode=dialogue_options.";
     }
     if (kind == DimensionKind::Skill) {
-        return "Dimension: skill. Generate 3-5 candidate names only. Prohibit definitions and explanations. "
-               "Use short names. Return strict JSON using proposal_json.mode=candidate_set. User query: " + raw_prompt;
+        return "DIMENSION=SKILL_V1\nCATEGORY=BOOTSTRAP_CATEGORY_SKILL_NAME_TITLES_V1\nRAW_PROMPT=\"" + capped_raw + "\"\n"
+               "Dimension: skill. Generate 3-5 candidate names only. Prohibit definitions and explanations. "
+               "Use short names. Return strict JSON using proposal_json.mode=candidate_set.";
     }
-    return "Dimension: class. Generate 3-5 candidate names only. Prohibit definitions and explanations. "
-           "Use short names. Return strict JSON using proposal_json.mode=candidate_set. User query: " + raw_prompt;
+    return "DIMENSION=CLASS_V1\nCATEGORY=BOOTSTRAP_CATEGORY_CHARACTER_CLASS_TITLES_V1\nRAW_PROMPT=\"" + capped_raw + "\"\n"
+           "Dimension: class. Generate 3-5 candidate names only. Prohibit definitions and explanations. "
+           "Use short names. Return strict JSON using proposal_json.mode=candidate_set.";
 }
 
 }  // namespace proteus::bootstrap

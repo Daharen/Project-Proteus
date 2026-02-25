@@ -53,29 +53,31 @@ TEST(BootstrapPromptComposerTest, CategoryMappingDeterministic) {
 TEST(BootstrapPromptComposerTest, CategoryInstructionBlocksExactV1) {
     EXPECT_EQ(
         std::string(proteus::funnel::CategoryInstructionBlockV1(proteus::bootstrap::BootstrapCategory::BOOTSTRAP_CATEGORY_CHARACTER_CLASS_TITLES_V1)),
-        std::string("CATEGORY_BLOCK_V1: BOOTSTRAP_CATEGORY_CHARACTER_CLASS_TITLES_V1\nGenerate 5 character class titles appropriate to RPGs across fantasy, sci-fi, and hybrid settings.\nTitles must feel like class names from real games.\nDo not output mundane civilian roles.\nDo not output Owner, Pet Owner, Caretaker, Handler, Guardian.\nIf context implies companion control, bias toward archetypes: Beastmaster, Summoner, Tamer, Binder, Packlord, Warden.\nAvoid five variants of the same root word.\nEach candidate must represent a different fantasy of play.")
+        std::string("CATEGORY_BLOCK_V1: BOOTSTRAP_CATEGORY_CHARACTER_CLASS_TITLES_V1\nGenerate 5 character class titles appropriate to RPGs across fantasy, sci-fi, and hybrid settings.\nTitles must feel like class names from real games.\nDo not output mundane civilian roles.\nDo not output Owner, Pet Owner, Caretaker, Handler, Guardian.\nIf context implies companion control, bias toward archetypes: Beastmaster, Summoner, Tamer, Binder, Packlord, Warden.\nAvoid five variants of the same root word.\nEach candidate must represent a different fantasy of play.\nAnchor naming choices to RAW_PROMPT tokens.")
     );
     EXPECT_EQ(
         std::string(proteus::funnel::CategoryInstructionBlockV1(proteus::bootstrap::BootstrapCategory::BOOTSTRAP_CATEGORY_SKILL_NAME_TITLES_V1)),
-        std::string("CATEGORY_BLOCK_V1: BOOTSTRAP_CATEGORY_SKILL_NAME_TITLES_V1\nGenerate 5 skill names that would appear in an RPG skill tree.\nNames must be 1-3 words and action-evocative.\nPrefer verbs or evocative noun phrases over generic labels.\nAvoid Skill, Ability, Power in the name.\nAvoid trivial paraphrases.")
+        std::string("CATEGORY_BLOCK_V1: BOOTSTRAP_CATEGORY_SKILL_NAME_TITLES_V1\nGenerate 5 skill names that would appear in an RPG skill tree.\nNames must be 1-3 words and action-evocative.\nPrefer verbs or evocative noun phrases over generic labels.\nAvoid Skill, Ability, Power in the name.\nAvoid trivial paraphrases.\nAnchor naming choices to RAW_PROMPT tokens.")
     );
     EXPECT_EQ(
         std::string(proteus::funnel::CategoryInstructionBlockV1(proteus::bootstrap::BootstrapCategory::BOOTSTRAP_CATEGORY_TRAIT_PERK_TITLES_V1)),
-        std::string("CATEGORY_BLOCK_V1: BOOTSTRAP_CATEGORY_TRAIT_PERK_TITLES_V1\nGenerate 5 trait or perk titles suitable for passive bonuses.\nNames must feel like perk cards or traits.\nAvoid literal descriptions like More Damage.\nPrefer flavorful archetype language.")
+        std::string("CATEGORY_BLOCK_V1: BOOTSTRAP_CATEGORY_TRAIT_PERK_TITLES_V1\nGenerate 5 trait or perk titles suitable for passive bonuses.\nNames must feel like perk cards or traits.\nAvoid literal descriptions like More Damage.\nPrefer flavorful archetype language.\nAnchor naming choices to RAW_PROMPT tokens.")
     );
     EXPECT_EQ(
         std::string(proteus::funnel::CategoryInstructionBlockV1(proteus::bootstrap::BootstrapCategory::BOOTSTRAP_CATEGORY_FACTION_ROLE_TITLES_V1)),
-        std::string("CATEGORY_BLOCK_V1: BOOTSTRAP_CATEGORY_FACTION_ROLE_TITLES_V1\nGenerate 5 faction role titles.\nTitles must be believable within a faction hierarchy.\nAvoid modern corporate titles.\nAvoid purely generic roles like Member.")
+        std::string("CATEGORY_BLOCK_V1: BOOTSTRAP_CATEGORY_FACTION_ROLE_TITLES_V1\nGenerate 5 faction role titles.\nTitles must be believable within a faction hierarchy.\nAvoid modern corporate titles.\nAvoid purely generic roles like Member.\nAnchor naming choices to RAW_PROMPT tokens.")
     );
     EXPECT_EQ(
         std::string(proteus::funnel::CategoryInstructionBlockV1(proteus::bootstrap::BootstrapCategory::BOOTSTRAP_CATEGORY_ITEM_ARCHETYPE_TITLES_V1)),
-        std::string("CATEGORY_BLOCK_V1: BOOTSTRAP_CATEGORY_ITEM_ARCHETYPE_TITLES_V1\nGenerate 5 item archetype names.\nNames must be category-level, not unique legendary names.\nAvoid Thing, Object, Item.")
+        std::string("CATEGORY_BLOCK_V1: BOOTSTRAP_CATEGORY_ITEM_ARCHETYPE_TITLES_V1\nGenerate 5 item archetype names.\nNames must be category-level, not unique legendary names.\nAvoid Thing, Object, Item.\nAnchor naming choices to RAW_PROMPT tokens.")
     );
 }
 
 TEST(BootstrapPromptComposerTest, ComposedPromptContainsExpectedFragmentsPerCategory) {
     const auto prompt = proteus::funnel::ComposeBootstrapPrompt(proteus::funnel::BootstrapPromptTypedContext{
         .bootstrap_category = proteus::bootstrap::BootstrapCategory::BOOTSTRAP_CATEGORY_CHARACTER_CLASS_TITLES_V1,
+        .dimension_kind = proteus::bootstrap::DimensionKind::Class,
+        .raw_prompt = "has pets they control",
         .schema_version = 1,
         .candidate_count = 5,
         .context_tokens = std::vector<std::string>{"has pets they control"}
@@ -85,8 +87,59 @@ TEST(BootstrapPromptComposerTest, ComposedPromptContainsExpectedFragmentsPerCate
     EXPECT_EQ(prompt.find("PetOwner") != std::string::npos, true);
     EXPECT_EQ(prompt.find("CONSTRAINTS:") != std::string::npos, true);
     EXPECT_EQ(prompt.find("CONTEXT_TOKENS:") != std::string::npos, true);
+    EXPECT_EQ(prompt.find("RAW_PROMPT=\"has pets they control\"") != std::string::npos, true);
+    EXPECT_EQ(prompt.find("CATEGORY=BOOTSTRAP_CATEGORY_CHARACTER_CLASS_TITLES_V1") != std::string::npos, true);
 }
 
+
+
+
+TEST(BootstrapPromptComposerTest, LegacyDimensionPromptIncludesRawPromptAndCategoryDirective) {
+    const auto prompt = proteus::bootstrap::BuildBootstrapPromptForDimension(
+        proteus::bootstrap::DimensionKind::Class,
+        "my raw class request"
+    );
+    EXPECT_EQ(prompt.find("RAW_PROMPT=\"my raw class request\"") != std::string::npos, true);
+    EXPECT_EQ(prompt.find("CATEGORY=BOOTSTRAP_CATEGORY_CHARACTER_CLASS_TITLES_V1") != std::string::npos, true);
+    EXPECT_EQ(prompt.find("DIMENSION=CLASS_V1") != std::string::npos, true);
+}
+
+TEST(BootstrapPromptComposerTest, PromptIncludesRawPromptAndCategoryAndDiffersByInput) {
+    const auto prompt_a = proteus::funnel::ComposeBootstrapPrompt(proteus::funnel::BootstrapPromptTypedContext{
+        .bootstrap_category = proteus::bootstrap::BootstrapCategory::BOOTSTRAP_CATEGORY_CHARACTER_CLASS_TITLES_V1,
+        .dimension_kind = proteus::bootstrap::DimensionKind::Class,
+        .raw_prompt = "alpha beasts",
+        .schema_version = 1,
+        .candidate_count = 5,
+        .context_tokens = std::vector<std::string>{"alpha"}
+    });
+    const auto prompt_b = proteus::funnel::ComposeBootstrapPrompt(proteus::funnel::BootstrapPromptTypedContext{
+        .bootstrap_category = proteus::bootstrap::BootstrapCategory::BOOTSTRAP_CATEGORY_CHARACTER_CLASS_TITLES_V1,
+        .dimension_kind = proteus::bootstrap::DimensionKind::Class,
+        .raw_prompt = "beta spirits",
+        .schema_version = 1,
+        .candidate_count = 5,
+        .context_tokens = std::vector<std::string>{"beta"}
+    });
+    EXPECT_EQ(prompt_a == prompt_b, false);
+    EXPECT_EQ(prompt_a.find("alpha beasts") != std::string::npos, true);
+    EXPECT_EQ(prompt_b.find("beta spirits") != std::string::npos, true);
+    EXPECT_EQ(prompt_a.find("CATEGORY=BOOTSTRAP_CATEGORY_CHARACTER_CLASS_TITLES_V1") != std::string::npos, true);
+    EXPECT_EQ(prompt_b.find("CATEGORY=BOOTSTRAP_CATEGORY_CHARACTER_CLASS_TITLES_V1") != std::string::npos, true);
+}
+
+TEST(BootstrapPromptComposerTest, SemanticRepairPromptIncludesRawPromptAndRejectCodes) {
+    const auto msg = proteus::funnel::BuildSemanticRepairInstruction(
+        proteus::bootstrap::BootstrapCategory::BOOTSTRAP_CATEGORY_CHARACTER_CLASS_TITLES_V1,
+        proteus::bootstrap::DimensionKind::Class,
+        "companions and summoning",
+        std::vector<std::string>{"companions"},
+        std::vector<std::string>{"SEMANTIC_DUPLICATE_V1", "SEMANTIC_OVERLAP_V1"}
+    );
+    EXPECT_EQ(msg.find("companions and summoning") != std::string::npos, true);
+    EXPECT_EQ(msg.find("SEMANTIC_DUPLICATE_V1") != std::string::npos, true);
+    EXPECT_EQ(msg.find("SEMANTIC_OVERLAP_V1") != std::string::npos, true);
+}
 
 TEST(BootstrapPromptComposerTest, RootRequiredMatchesRootPropertiesIncludingBootstrapCategory) {
     const auto schema = proteus::bootstrap::BuildBootstrapSchema_ClassCandidateSet();
@@ -159,10 +212,14 @@ TEST(BootstrapPromptComposerTest, BeastMasterPassesButHyphenFails) {
 TEST(BootstrapPromptComposerTest, RepairMessageContainsCategorySpecificConstraints) {
     const auto msg = proteus::funnel::BuildSemanticRepairInstruction(
         proteus::bootstrap::BootstrapCategory::BOOTSTRAP_CATEGORY_CHARACTER_CLASS_TITLES_V1,
+        proteus::bootstrap::DimensionKind::Class,
+        "find a class for pet control",
+        std::vector<std::string>{"pet control"},
         std::vector<std::string>{"SEMANTIC_DUPLICATE_V1"}
     );
     EXPECT_EQ(msg.find("CATEGORY=BOOTSTRAP_CATEGORY_CHARACTER_CLASS_TITLES_V1") != std::string::npos, true);
     EXPECT_EQ(msg.find("SEMANTIC_DUPLICATE_V1") != std::string::npos, true);
+    EXPECT_EQ(msg.find("RAW_PROMPT=\"find a class for pet control\"") != std::string::npos, true);
     EXPECT_EQ(msg.find("Beastmaster,Summoner,Tamer,Binder,Packlord") != std::string::npos, true);
 }
 

@@ -91,6 +91,7 @@ bool import_with_single_semantic_retry(
     const std::string& stable_player_id,
     const std::string& session_id,
     const std::string& raw_prompt,
+    const std::vector<std::string>& context_tokens,
     query::QueryDomain domain,
     const llm::LlmRequest& base_request,
     bootstrap::BootstrapCategory bootstrap_category,
@@ -128,7 +129,7 @@ bool import_with_single_semantic_retry(
         base_request.model,
         base_request.schema_name,
         base_request.schema_version,
-        funnel::BuildSemanticRepairInstruction(bootstrap_category, feedback.reject_codes),
+        funnel::BuildSemanticRepairInstruction(bootstrap_category, base_request.dimension_kind, raw_prompt, context_tokens, feedback.reject_codes),
         base_request.request_kind,
         base_request.dimension_kind,
         bootstrap_category
@@ -633,19 +634,25 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
             llm::LlmCacheClient llm_client;
             const auto& contract = bootstrap::GetDimensionContractForDomain(domain);
             const auto bootstrap_category = bootstrap::ResolveBootstrapCategory(bootstrap::BootstrapRoute::FunnelBootstrapV1, domain);
+            const auto context_tokens = parse_bootstrap_context_tokens(body);
             const auto prompt_text = funnel::ComposeBootstrapPrompt(funnel::BootstrapPromptTypedContext{
                 .bootstrap_category = bootstrap_category,
+                .dimension_kind = contract.kind,
+                .raw_prompt = raw_prompt,
                 .schema_version = 1,
                 .candidate_count = funnel::kBootstrapPromptCandidateCount,
-                .context_tokens = parse_bootstrap_context_tokens(body)
+                .context_tokens = context_tokens
             });
             const auto request = llm::BuildDeterministicRequest("openai", "gpt-4.1-mini", "proteus_funnel_bootstrap_v1", 1, prompt_text, llm::LlmRequestKind::BootstrapFunnel, contract.kind, bootstrap_category);
+#if !defined(NDEBUG)
+            std::cerr << "bootstrap_prompt_hash=" << request.prompt_hash_hex << "\n";
+#endif
             const auto mode = parse_llm_mode_from_request(body);
             const auto artifact_result = llm_client.TryGetOrCaptureArtifact(db, request, mode);
             if (artifact_result.status == llm::LlmArtifactStatus::CacheHit || artifact_result.status == llm::LlmArtifactStatus::CapturedAndCached) {
                 bool hard_failed = false;
                 std::string status;
-                import_with_single_semantic_retry(db, "", "", raw_prompt, domain, request, request.bootstrap_category, mode, llm_client, artifact_result, status, hard_failed);
+                import_with_single_semantic_retry(db, "", "", raw_prompt, context_tokens, domain, request, request.bootstrap_category, mode, llm_client, artifact_result, status, hard_failed);
                 payload["status"] = status;
                 if (hard_failed) {
                     payload["ok"] = false;
@@ -720,11 +727,14 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
             llm::LlmCacheClient llm_client;
             const auto mode = parse_llm_mode();
             const auto bootstrap_category = bootstrap::ResolveBootstrapCategory(bootstrap::BootstrapRoute::QueryBootstrapV1, query::QueryDomain::Generic);
+            const auto context_tokens = parse_bootstrap_context_tokens(body);
             const auto prompt_text = funnel::ComposeBootstrapPrompt(funnel::BootstrapPromptTypedContext{
                 .bootstrap_category = bootstrap_category,
+                .dimension_kind = bootstrap::DimensionKind::Class,
+                .raw_prompt = raw_prompt,
                 .schema_version = 1,
                 .candidate_count = funnel::kBootstrapPromptCandidateCount,
-                .context_tokens = parse_bootstrap_context_tokens(body)
+                .context_tokens = context_tokens
             });
             const auto request = llm::BuildDeterministicRequest(
                 "openai",
@@ -736,11 +746,14 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
                 bootstrap::DimensionKind::Class,
                 bootstrap_category
             );
+#if !defined(NDEBUG)
+            std::cerr << "bootstrap_prompt_hash=" << request.prompt_hash_hex << "\n";
+#endif
             const auto artifact_result = llm_client.TryGetOrCaptureArtifact(db, request, mode);
             if (artifact_result.status == llm::LlmArtifactStatus::CacheHit || artifact_result.status == llm::LlmArtifactStatus::CapturedAndCached) {
                 bool hard_failed = false;
                 std::string status;
-                import_with_single_semantic_retry(db, stable_player_id, session_id, raw_prompt, query::QueryDomain::Generic, request, request.bootstrap_category, mode, llm_client, artifact_result, status, hard_failed);
+                import_with_single_semantic_retry(db, stable_player_id, session_id, raw_prompt, context_tokens, query::QueryDomain::Generic, request, request.bootstrap_category, mode, llm_client, artifact_result, status, hard_failed);
                 bootstrap_payload["status"] = status;
                 if (hard_failed) {
                     bootstrap_payload["ok"] = false;
