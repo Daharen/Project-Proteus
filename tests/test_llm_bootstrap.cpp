@@ -17,7 +17,7 @@ TEST(LlmBootstrapTest, OfflineCacheMissIsDeterministicAndNoRowsWritten) {
         proteus::tests::TestSqliteDbFile test_db("offline_cache_miss");
         auto& db = test_db.db();
 
-        const auto request = proteus::llm::BuildDeterministicRequest("openai", "gpt-4.1-mini", "proteus_novel_query_bootstrap", 1, "novel query text");
+        const auto request = proteus::llm::BuildDeterministicRequest("openai", "gpt-4.1-mini", "proteus_funnel_bootstrap_v1", 1, "novel query text");
         proteus::llm::LlmCacheClient client;
         const auto result = client.TryGetOrCaptureArtifact(db, request, proteus::llm::LlmMode::Offline);
         EXPECT_EQ(result.status, proteus::llm::LlmArtifactStatus::CacheMissOffline);
@@ -33,8 +33,8 @@ TEST(LlmBootstrapTest, CacheReplayIsByteIdentical) {
         proteus::tests::TestSqliteDbFile test_db("cache_replay");
         auto& db = test_db.db();
 
-        const auto request = proteus::llm::BuildDeterministicRequest("openai", "gpt-4.1-mini", "proteus_novel_query_bootstrap", 1, "fixed prompt");
-        const std::string artifact = R"({"normalized_query_text":"fixed prompt","intent_tags":["tag1"],"synopsis":"A synopsis","proposals":[{"proposal_title":"A","proposal_body":"B","choice_seed_hint":"H1","risk_profile":"low"},{"proposal_title":"C","proposal_body":"D","choice_seed_hint":"H2","risk_profile":"medium"},{"proposal_title":"E","proposal_body":"F","choice_seed_hint":"H3","risk_profile":"high"}],"safety_flags":[]})";
+        const auto request = proteus::llm::BuildDeterministicRequest("openai", "gpt-4.1-mini", "proteus_funnel_bootstrap_v1", 1, "fixed prompt");
+        const std::string artifact = R"({"normalized_query_text":"fixed prompt","intent_tags":["tag1"],"synopsis":"A synopsis","proposals":[{"proposal_id":"p1","proposal_kind":1,"proposal_title":"A","proposal_body":"B","proposal_json":{"mode":"candidate_set","name":"A"}},{"proposal_id":"p2","proposal_kind":1,"proposal_title":"C","proposal_body":"D","proposal_json":{"mode":"candidate_set","name":"C"}},{"proposal_id":"p3","proposal_kind":1,"proposal_title":"E","proposal_body":"F","proposal_json":{"mode":"candidate_set","name":"E"}}],"safety_flags":[]})";
 
         auto ins = db.prepare(
             "INSERT INTO llm_response_cache(created_at_utc, provider, model, schema_name, schema_version, prompt_hash, request_json, response_json, response_sha256, raw_response_text, raw_response_text_trunc, error_code) "
@@ -65,7 +65,7 @@ TEST(LlmBootstrapTest, ImportDeterminismProposalIdsStableAcrossReruns) {
         proteus::tests::TestSqliteDbFile test_db("import_det");
         auto& db = test_db.db();
 
-        const std::string artifact = R"({"normalized_query_text":"where healer","intent_tags":["healer","quest"],"synopsis":"Seek healer herbs around temples.","proposals":[{"proposal_title":"Temple Route","proposal_body":"Ask priests.","choice_seed_hint":"route-1","risk_profile":"low"},{"proposal_title":"Forest Route","proposal_body":"Search glades.","choice_seed_hint":"route-2","risk_profile":"medium"},{"proposal_title":"Bandit Route","proposal_body":"Loot caches.","choice_seed_hint":"route-3","risk_profile":"high"}],"safety_flags":[]})";
+        const std::string artifact = R"({"normalized_query_text":"where healer","intent_tags":["healer","quest"],"synopsis":"Seek healer herbs around temples.","proposals":[{"proposal_id":"p1","proposal_kind":1,"proposal_title":"Temple","proposal_body":"Ask priests.","proposal_json":{"mode":"candidate_set","name":"Temple"}},{"proposal_id":"p2","proposal_kind":1,"proposal_title":"Forest","proposal_body":"Search glades.","proposal_json":{"mode":"candidate_set","name":"Forest"}},{"proposal_id":"p3","proposal_kind":1,"proposal_title":"Bandit","proposal_body":"Loot caches.","proposal_json":{"mode":"candidate_set","name":"Bandit"}}],"safety_flags":[]})";
 
         ASSERT_EQ(proteus::bootstrap::ImportNovelQueryArtifact(db, "player_B", "session_1", "Where healer herbs?", artifact, 1), true);
         std::vector<std::string> first_ids;
@@ -94,7 +94,7 @@ TEST(LlmBootstrapTest, ImportAppliesDeterministicStringCaps) {
         const std::string long_text(500, 'z');
         const std::string artifact =
             "{\"normalized_query_text\":\"caps\",\"intent_tags\":[\"" + long_text + "\",\"" + long_text + "\",\"" + long_text + "\",\"" + long_text + "\",\"" + long_text + "\",\"" + long_text + "\",\"" + long_text + "\"],"
-            "\"synopsis\":\"" + long_text + "\",\"proposals\":[{\"proposal_title\":\"" + long_text + "\",\"proposal_body\":\"" + long_text + "\",\"choice_seed_hint\":\"" + long_text + "\",\"risk_profile\":\"low\"},{\"proposal_title\":\"" + long_text + "\",\"proposal_body\":\"" + long_text + "\",\"choice_seed_hint\":\"" + long_text + "\",\"risk_profile\":\"medium\"},{\"proposal_title\":\"" + long_text + "\",\"proposal_body\":\"" + long_text + "\",\"choice_seed_hint\":\"" + long_text + "\",\"risk_profile\":\"high\"}],\"safety_flags\":[]}";
+            "\"synopsis\":\"" + long_text + "\",\"proposals\":[{\"proposal_id\":\"p1\",\"proposal_kind\":1,\"proposal_title\":\"" + long_text + "\",\"proposal_body\":\"" + long_text + "\",\"proposal_json\":{\"mode\":\"candidate_set\",\"name\":\"" + long_text + "\"}},{\"proposal_id\":\"p2\",\"proposal_kind\":1,\"proposal_title\":\"" + long_text + "\",\"proposal_body\":\"" + long_text + "\",\"proposal_json\":{\"mode\":\"candidate_set\",\"name\":\"" + long_text + "\"}},{\"proposal_id\":\"p3\",\"proposal_kind\":1,\"proposal_title\":\"" + long_text + "\",\"proposal_body\":\"" + long_text + "\",\"proposal_json\":{\"mode\":\"candidate_set\",\"name\":\"" + long_text + "\"}}],\"safety_flags\":[]}";
 
         ASSERT_EQ(proteus::bootstrap::ImportNovelQueryArtifact(db, "player_B", "session_2", "caps input", artifact, 1), true);
 
@@ -126,7 +126,7 @@ TEST(LlmBootstrapTest, DbHandleClosesAndFileIsDeletable) {
 TEST(LlmBootstrapTest, NpcIdIsStableAcrossReruns) {
     proteus::tests::TestSqliteDbFile test_db("npc_id_stable");
     auto& db = test_db.db();
-    const std::string artifact = R"({"intent_summary":"looking for smith","npc_candidates":[{"npc_name":"Borin","npc_role":"Blacksmith","why_relevant":"crafting","mood_seed_hint":"busy"},{"npc_name":"Mira","npc_role":"Alchemist","why_relevant":"potions","mood_seed_hint":"curious"},{"npc_name":"Tarn","npc_role":"Guard Captain","why_relevant":"security","mood_seed_hint":"stern"}]})";
+    const std::string artifact = R"({"normalized_query_text":"find smith","intent_tags":["smith"],"synopsis":"Find a smith.","proposals":[{"proposal_id":"n1","proposal_kind":3,"proposal_title":"Borin","proposal_body":"Blacksmith","proposal_json":{"mode":"candidate_set","name":"Borin"}},{"proposal_id":"n2","proposal_kind":3,"proposal_title":"Mira","proposal_body":"Alchemist","proposal_json":{"mode":"candidate_set","name":"Mira"}},{"proposal_id":"n3","proposal_kind":3,"proposal_title":"Tarn","proposal_body":"Captain","proposal_json":{"mode":"candidate_set","name":"Tarn"}}],"safety_flags":[]})";
     ASSERT_EQ(proteus::bootstrap::ImportBootstrapArtifactForDomain(db, "p", "s", "find smith", proteus::query::QueryDomain::NpcIntent, artifact, 1), true);
 
     const auto qid = proteus::query::GetOrCreateQueryId(db, "find smith", proteus::query::QueryDomain::NpcIntent);
@@ -138,7 +138,7 @@ TEST(LlmBootstrapTest, NpcIdIsStableAcrossReruns) {
 TEST(LlmBootstrapTest, DialogueProposalIdsStableAcrossReruns) {
     proteus::tests::TestSqliteDbFile test_db("dialogue_stable");
     auto& db = test_db.db();
-    const std::string artifact = R"({"npc_opening_line":"Need something?","options":[{"option_text":"Trade?","option_tone":"polite","option_goal_tag":"trade"},{"option_text":"Tell me rumors","option_tone":"curious","option_goal_tag":"rumors"},{"option_text":"Stand aside","option_tone":"blunt","option_goal_tag":"intimidate"}],"include_idk":true,"idk_prompt":"Not sure"})";
+    const std::string artifact = R"({"normalized_query_text":"talk to smith","intent_tags":["dialogue"],"synopsis":"Talk options.","proposals":[{"proposal_id":"d1","proposal_kind":4,"proposal_title":"Trade?","proposal_body":"Ask to trade","proposal_json":{"mode":"dialogue_options","utterance":"Trade?","intent_tag":"trade","tone":"polite"}},{"proposal_id":"d2","proposal_kind":4,"proposal_title":"Rumors","proposal_body":"Ask rumors","proposal_json":{"mode":"dialogue_options","utterance":"Tell me rumors","intent_tag":"rumors","tone":"curious"}},{"proposal_id":"d3","proposal_kind":4,"proposal_title":"Move","proposal_body":"Threaten","proposal_json":{"mode":"dialogue_options","utterance":"Stand aside","intent_tag":"intimidate","tone":"blunt"}}],"safety_flags":[]})";
 
     ASSERT_EQ(proteus::bootstrap::ImportBootstrapArtifactForDomain(db, "p", "s", "talk to smith", proteus::query::QueryDomain::DialogueOption, artifact, 1), true);
     std::vector<std::string> first_ids;
@@ -154,7 +154,7 @@ TEST(LlmBootstrapTest, DialogueProposalIdsStableAcrossReruns) {
 TEST(LlmBootstrapTest, OfflineMissDoesNotMutateBootstrapTables) {
     proteus::tests::TestSqliteDbFile test_db("offline_nomutate");
     auto& db = test_db.db();
-    const auto request = proteus::llm::BuildDeterministicRequest("openai", "gpt-4.1-mini", "proteus_bootstrap_class_v1", 1, "brand new class");
+    const auto request = proteus::llm::BuildDeterministicRequest("openai", "gpt-4.1-mini", "proteus_funnel_bootstrap_v1", 1, "brand new class");
     proteus::llm::LlmCacheClient client;
     const auto r = client.TryGetOrCaptureArtifact(db, request, proteus::llm::LlmMode::Offline);
     ASSERT_EQ(r.status, proteus::llm::LlmArtifactStatus::CacheMissOffline);
