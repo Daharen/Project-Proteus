@@ -18,6 +18,16 @@ proteus::llm::LlmRequest bootstrap_req(
     };
 }
 
+const nlohmann::json& schema_for(const nlohmann::json& payload) {
+    return payload.at("text").at("format").at("schema");
+}
+
+void expect_closed_object_schema(const nlohmann::json& schema_node) {
+    ASSERT_EQ(schema_node.is_object(), true);
+    ASSERT_EQ(schema_node.contains("additionalProperties"), true);
+    EXPECT_EQ(schema_node.at("additionalProperties").get<bool>(), false);
+}
+
 }  // namespace
 
 TEST(OpenAiResponsesClientTest, ExtractsOutputTextFromOutputContentArray) {
@@ -46,7 +56,7 @@ TEST(OpenAiResponsesClientTest, PromptTextMutationDoesNotAffectBootstrapSchemaOr
 
     EXPECT_EQ(payload_a.at("text").at("format").at("name").get<std::string>(), "proteus_funnel_bootstrap_v1");
     EXPECT_EQ(payload_b.at("text").at("format").at("name").get<std::string>(), "proteus_funnel_bootstrap_v1");
-    EXPECT_EQ(payload_a.at("text").at("format").at("schema").dump(), payload_b.at("text").at("format").at("schema").dump());
+    EXPECT_EQ(schema_for(payload_a).dump(), schema_for(payload_b).dump());
 }
 
 TEST(OpenAiResponsesClientTest, BootstrapNamingIsInvariantAcrossDimensions) {
@@ -58,7 +68,7 @@ TEST(OpenAiResponsesClientTest, BootstrapNamingIsInvariantAcrossDimensions) {
     EXPECT_EQ(skill_payload.at("text").at("format").at("name").get<std::string>(), "proteus_funnel_bootstrap_v1");
     EXPECT_EQ(dialogue_payload.at("text").at("format").at("name").get<std::string>(), "proteus_funnel_bootstrap_v1");
 
-    EXPECT_EQ(class_payload.at("text").at("format").at("schema").dump() == dialogue_payload.at("text").at("format").at("schema").dump(), false);
+    EXPECT_EQ(schema_for(class_payload).dump() == schema_for(dialogue_payload).dump(), false);
 }
 
 TEST(OpenAiResponsesClientTest, BootstrapSchemaBodyDoesNotContainTopLevelName) {
@@ -66,7 +76,22 @@ TEST(OpenAiResponsesClientTest, BootstrapSchemaBodyDoesNotContainTopLevelName) {
         bootstrap_req(proteus::bootstrap::DimensionKind::Class, "class text")
     );
 
-    EXPECT_EQ(payload.at("text").at("format").at("schema").contains("name"), false);
+    EXPECT_EQ(schema_for(payload).contains("name"), false);
+}
+
+TEST(OpenAiResponsesClientTest, BootstrapSchemaObjectsAreClosedAcrossDimensions) {
+    for (const auto kind : {proteus::bootstrap::DimensionKind::Class, proteus::bootstrap::DimensionKind::Skill, proteus::bootstrap::DimensionKind::Dialogue}) {
+        const auto payload = proteus::llm::openai::build_openai_responses_payload(bootstrap_req(kind, "prompt"));
+        const auto& schema = schema_for(payload);
+
+        expect_closed_object_schema(schema);
+
+        const auto& proposal = schema.at("properties").at("proposals").at("items");
+        expect_closed_object_schema(proposal);
+
+        const auto& proposal_json = proposal.at("properties").at("proposal_json");
+        expect_closed_object_schema(proposal_json);
+    }
 }
 
 TEST(OpenAiResponsesClientTest, BootstrapWithoutDimensionFailsDeterministically) {

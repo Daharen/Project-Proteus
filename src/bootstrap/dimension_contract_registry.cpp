@@ -3,9 +3,57 @@
 #include <algorithm>
 #include <array>
 #include <set>
+#include <string>
+#include <vector>
 
 namespace proteus::bootstrap {
 namespace {
+
+void CloseAllObjectSchemas(nlohmann::json& schema) {
+    std::vector<nlohmann::json*> stack;
+    stack.push_back(&schema);
+
+    while (!stack.empty()) {
+        nlohmann::json* node = stack.back();
+        stack.pop_back();
+
+        if (!node->is_object()) {
+            continue;
+        }
+
+        if (node->contains("type") && node->at("type").is_string() && node->at("type").get<std::string>() == "object") {
+            (*node)["additionalProperties"] = false;
+        }
+
+        if (node->contains("properties") && node->at("properties").is_object()) {
+            std::vector<std::string> keys;
+            for (const auto& entry : node->at("properties").items()) {
+                keys.push_back(entry.key());
+            }
+            std::sort(keys.begin(), keys.end());
+            for (const auto& key : keys) {
+                stack.push_back(&((*node)["properties"][key]));
+            }
+        }
+
+        if (node->contains("items")) {
+            stack.push_back(&((*node)["items"]));
+        }
+
+        for (const char* defs_key : {"definitions", "$defs"}) {
+            if (node->contains(defs_key) && node->at(defs_key).is_object()) {
+                std::vector<std::string> keys;
+                for (const auto& entry : node->at(defs_key).items()) {
+                    keys.push_back(entry.key());
+                }
+                std::sort(keys.begin(), keys.end());
+                for (const auto& key : keys) {
+                    stack.push_back(&((*node)[defs_key][key]));
+                }
+            }
+        }
+    }
+}
 
 nlohmann::json build_envelope_schema(const nlohmann::json& proposal_item_schema) {
     return nlohmann::json{
@@ -162,11 +210,23 @@ nlohmann::json dialogue_proposal_schema() {
 
 }  // namespace
 
-nlohmann::json BuildBootstrapSchema_ClassCandidateSet() { return build_envelope_schema(candidate_proposal_schema()); }
+nlohmann::json BuildBootstrapSchema_ClassCandidateSet() {
+    auto schema = build_envelope_schema(candidate_proposal_schema());
+    CloseAllObjectSchemas(schema);
+    return schema;
+}
 
-nlohmann::json BuildBootstrapSchema_SkillCandidateSet() { return build_envelope_schema(candidate_proposal_schema()); }
+nlohmann::json BuildBootstrapSchema_SkillCandidateSet() {
+    auto schema = build_envelope_schema(candidate_proposal_schema());
+    CloseAllObjectSchemas(schema);
+    return schema;
+}
 
-nlohmann::json BuildBootstrapSchema_DialogueOptions() { return build_envelope_schema(dialogue_proposal_schema()); }
+nlohmann::json BuildBootstrapSchema_DialogueOptions() {
+    auto schema = build_envelope_schema(dialogue_proposal_schema());
+    CloseAllObjectSchemas(schema);
+    return schema;
+}
 
 bool ValidateBootstrapArtifact_ClassCandidateSet(const nlohmann::json& artifact, std::vector<std::string>& issues) {
     return validate_candidate_set(artifact, issues);
