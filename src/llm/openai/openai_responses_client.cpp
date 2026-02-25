@@ -170,7 +170,7 @@ ProviderCaptureResult capture_openai_response(const LlmRequest& request) {
     nlohmann::json payload = {
         {"model", request.model},
         {"input", request.prompt_text},
-        {"text", {{"format", {{"type", "json_schema"}, {"json_schema", schema}}}}}
+        {"text", {{"format", {{"type", "json_schema"}, {"name", "proteus_funnel_bootstrap_v1"}, {"json_schema", schema}}}}}
     };
 
     const auto result = post_openai_responses(payload.dump(), key);
