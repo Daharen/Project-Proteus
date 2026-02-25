@@ -553,6 +553,8 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
                 payload["placeholder"] = "No generated content available offline for this new entry. Try again when online.";
             } else {
                 payload["status"] = "provider_error";
+                payload["error_code"] = artifact_result.provider_error_code;
+                std::cerr << "Bootstrap provider error: error_code=" << artifact_result.provider_error_code << "\n";
             }
         }
         payload["proposals"] = load_bootstrap_proposals(db, query_id, domain);
@@ -635,6 +637,7 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
             } else {
                 bootstrap_payload["status"] = "provider_error";
                 bootstrap_payload["error_code"] = artifact_result.provider_error_code;
+                std::cerr << "Novel bootstrap provider error: error_code=" << artifact_result.provider_error_code << "\n";
             }
         }
 
