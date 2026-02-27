@@ -101,8 +101,10 @@ bool ImportBootstrapArtifactForDomain(persistence::SqliteDb& db, const std::stri
         return false;
     }
 
-    const std::int64_t query_id = query::GetOrCreateQueryId(db, raw_query_text, query_domain);
-    const std::string normalized = query::NormalizeQuery(raw_query_text);
+    const auto cluster_resolution = query::ResolveOrAdmitClusterId(db, query_domain, raw_query_text, "v1");
+    const std::int64_t query_id = cluster_resolution.query_id;
+    const std::string cluster_id = cluster_resolution.cluster_id;
+    const std::string normalized = cluster_resolution.normalized;
 
     std::string synopsis = cap(get_s(artifact, "synopsis"), kSynopsisMax);
     if (synopsis.empty()) synopsis = cap(get_s(artifact, "intent_summary"), kSynopsisMax);
@@ -155,18 +157,19 @@ bool ImportBootstrapArtifactForDomain(persistence::SqliteDb& db, const std::stri
             {"proposal_body", cap(pbody, 240)},
             {"proposal_json", proposal_json}
         };
-        const std::string pid = "bootstrap-q" + std::to_string(query_id) + "-d" + std::to_string(static_cast<std::int64_t>(query_domain)) + "-s" + std::to_string(schema_version) + "-i" + std::to_string(i);
+        const std::string pid = "bootstrap-c" + cluster_id + "-q" + std::to_string(query_id) + "-d" + std::to_string(static_cast<std::int64_t>(query_domain)) + "-s" + std::to_string(schema_version) + "-i" + std::to_string(i);
 
-        auto ins = db.prepare("INSERT INTO query_bootstrap_proposals(query_id, query_domain, schema_version, proposal_index, proposal_id, proposal_kind, proposal_json, proposal_title, proposal_body, choice_seed_hint, risk_profile) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, '', 'medium') ON CONFLICT(query_id, schema_version, proposal_index) DO UPDATE SET query_domain=excluded.query_domain, proposal_id=excluded.proposal_id, proposal_kind=excluded.proposal_kind, proposal_json=excluded.proposal_json, proposal_title=excluded.proposal_title, proposal_body=excluded.proposal_body;");
+        auto ins = db.prepare("INSERT INTO query_bootstrap_proposals(query_id, query_domain, cluster_id, schema_version, proposal_index, proposal_id, proposal_kind, proposal_json, proposal_title, proposal_body, choice_seed_hint, risk_profile) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, '', 'medium') ON CONFLICT(query_id, schema_version, proposal_index) DO UPDATE SET query_domain=excluded.query_domain, cluster_id=excluded.cluster_id, proposal_id=excluded.proposal_id, proposal_kind=excluded.proposal_kind, proposal_json=excluded.proposal_json, proposal_title=excluded.proposal_title, proposal_body=excluded.proposal_body;");
         ins.bind_int64(1, query_id);
         ins.bind_int64(2, static_cast<std::int64_t>(query_domain));
-        ins.bind_int64(3, schema_version);
-        ins.bind_int64(4, static_cast<std::int64_t>(i));
-        ins.bind_text(5, pid);
-        ins.bind_int64(6, static_cast<std::int64_t>(proposal_kind_for_domain(query_domain)));
-        ins.bind_text(7, canonical.dump());
-        ins.bind_text(8, cap(ptitle, 48));
-        ins.bind_text(9, cap(pbody, 240));
+        ins.bind_text(3, cluster_id);
+        ins.bind_int64(4, schema_version);
+        ins.bind_int64(5, static_cast<std::int64_t>(i));
+        ins.bind_text(6, pid);
+        ins.bind_int64(7, static_cast<std::int64_t>(proposal_kind_for_domain(query_domain)));
+        ins.bind_text(8, canonical.dump());
+        ins.bind_text(9, cap(ptitle, 48));
+        ins.bind_text(10, cap(pbody, 240));
         ins.step();
         ++i;
     }
