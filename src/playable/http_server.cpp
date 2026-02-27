@@ -631,6 +631,7 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
         const auto domain = parse_query_domain((body.contains("query_domain") && body.at("query_domain").is_string()) ? body.at("query_domain").get<std::string>() : std::string{"generic"});
         const std::string thresholds_version = (body.contains("thresholds_version") && body.at("thresholds_version").is_string()) ? body.at("thresholds_version").get<std::string>() : std::string{"v1"};
         persistence::SqliteDb db; db.open(config.db_path); persistence::ensure_schema(db);
+        persistence::SeedDomainSynonymsV1IfEmpty(db);
         const auto cluster = query::ResolveOrAdmitClusterId(db, domain, body.at("text").get<std::string>(), thresholds_version);
         const auto resolved = query::ResolveQuery(db, body.at("text").get<std::string>(), 5, 0.2, domain);
         nlohmann::json similar = nlohmann::json::array({});
@@ -645,6 +646,7 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
         const auto domain = parse_query_domain((body.contains("query_domain") && body.at("query_domain").is_string()) ? body.at("query_domain").get<std::string>() : std::string{"generic"});
         const int limit = body.contains("limit") && body.at("limit").is_number() ? std::max(1, std::min(25, static_cast<int>(body.at("limit").get<double>()))) : 8;
         persistence::SqliteDb db; db.open(config.db_path); persistence::ensure_schema(db);
+        persistence::SeedDomainSynonymsV1IfEmpty(db);
         const auto rows = query::SearchFacetTypes(db, domain, body.at("text").get<std::string>(), limit);
         nlohmann::json hits = nlohmann::json::array({});
         for (const auto& row : rows) {
@@ -665,6 +667,7 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
         const auto domain = parse_query_domain((body.contains("query_domain") && body.at("query_domain").is_string()) ? body.at("query_domain").get<std::string>() : std::string{"generic"});
         const std::string thresholds_version = (body.contains("thresholds_version") && body.at("thresholds_version").is_string()) ? body.at("thresholds_version").get<std::string>() : std::string{"v1"};
         persistence::SqliteDb db; db.open(config.db_path); persistence::ensure_schema(db);
+        persistence::SeedDomainSynonymsV1IfEmpty(db);
 
         const auto cluster = query::ResolveOrAdmitClusterId(db, domain, raw_prompt, thresholds_version);
         std::cerr << "resolver_output normalized_text='" << cluster.normalized << "' cluster_id='" << cluster.cluster_id
@@ -757,6 +760,7 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
         persistence::SqliteDb db;
         db.open(config.db_path);
         persistence::ensure_schema(db);
+        persistence::SeedDomainSynonymsV1IfEmpty(db);
         BanditSelector selector(db, kPlayableCorePolicyVersion);
 
         const auto context = parse_player_context(body);
@@ -891,6 +895,7 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
         persistence::SqliteDb db;
         db.open(config.db_path);
         persistence::ensure_schema(db);
+        persistence::SeedDomainSynonymsV1IfEmpty(db);
         BanditSelector selector(db, kPlayableCorePolicyVersion);
         const auto sid = body.at("session_id").get<std::string>();
         const auto pid = body.at("proposal_id").get<std::string>();

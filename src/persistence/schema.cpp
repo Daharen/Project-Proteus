@@ -432,7 +432,7 @@ void migrate_11_to_12(SqliteDb& db) {
     db.exec(
         "UPDATE concept_cluster "
         "SET canonical_query_id = ("
-        "SELECT MIN(qbp.query_id) FROM query_bootstrap_proposals qbp WHERE qbp.cluster_id = concept_cluster.cluster_id"
+        "SELECT MIN(qbp.query_id) FROM query_bootstrap_proposals qbp WHERE qbp.cluster_id = concept_cluster.cluster_id AND qbp.query_domain = concept_cluster.query_domain"
         ") "
         "WHERE canonical_query_id = 0;"
     );
@@ -447,16 +447,6 @@ void migrate_11_to_12(SqliteDb& db) {
         ");"
     );
 
-    const char* seeds[] = {"mage", "caster", "spellcaster", "arcanist", "witch", "sorcerer"};
-    for (const char* term : seeds) {
-        auto stmt = db.prepare(
-            "INSERT OR IGNORE INTO domain_synonyms(query_domain, term, canonical_term, created_at_utc) "
-            "VALUES(?1, ?2, 'caster', strftime('%Y-%m-%dT%H:%M:%fZ','now'));"
-        );
-        stmt.bind_int64(1, 1);
-        stmt.bind_text(2, term);
-        stmt.step();
-    }
 }
 
 void verify_sqlite_capabilities(SqliteDb& db, bool verbose) {
@@ -517,6 +507,37 @@ void open_and_migrate(SqliteDb& db, const std::string& db_path, bool verbose) {
     db.open(db_path);
     verify_sqlite_capabilities(db, verbose);
     ensure_schema(db);
+}
+
+void SeedDomainSynonymsV1IfEmpty(SqliteDb& db) {
+    db.exec(
+        "CREATE TABLE IF NOT EXISTS domain_synonyms ("
+        "query_domain INTEGER NOT NULL,"
+        "term TEXT NOT NULL,"
+        "canonical_term TEXT NOT NULL,"
+        "created_at_utc TEXT NOT NULL,"
+        "PRIMARY KEY(query_domain, term)"
+        ");"
+    );
+
+    auto count_stmt = db.prepare("SELECT COUNT(*) FROM domain_synonyms;");
+    if (!count_stmt.step()) {
+        return;
+    }
+    if (count_stmt.column_int64(0) > 0) {
+        return;
+    }
+
+    const char* seeds[] = {"mage", "caster", "spellcaster", "arcanist", "witch", "sorcerer"};
+    for (const char* term : seeds) {
+        auto stmt = db.prepare(
+            "INSERT OR IGNORE INTO domain_synonyms(query_domain, term, canonical_term, created_at_utc) "
+            "VALUES(?1, ?2, 'caster', strftime('%Y-%m-%dT%H:%M:%fZ','now'));"
+        );
+        stmt.bind_int64(1, 1);
+        stmt.bind_text(2, term);
+        stmt.step();
+    }
 }
 
 }  // namespace proteus::persistence

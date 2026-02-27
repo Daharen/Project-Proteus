@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_set>
@@ -14,8 +15,8 @@ namespace {
 constexpr int kFingerprintDims = 256;
 constexpr int kFingerprintVersion = 2;
 constexpr int kCandidateLimit = 32;
-constexpr double kHardDuplicateThreshold = 0.90;
-constexpr double kGreyBandThreshold = 0.74;
+constexpr double kHardDuplicateThreshold = 0.92;
+constexpr double kGreyBandThreshold = 0.78;
 
 bool is_ascii_space(unsigned char c) {
     return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';

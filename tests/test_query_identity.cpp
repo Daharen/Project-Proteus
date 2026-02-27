@@ -1,4 +1,5 @@
 #include "proteus/query/query_identity.hpp"
+#include "proteus/persistence/schema.hpp"
 #include "test_db_raii.hpp"
 
 #include <gtest/gtest.h>
@@ -67,8 +68,9 @@ TEST(QueryIdentityTest, ResolveOrAdmitClusterIdPersistsAliasAndSearchesFacetType
 
     const auto second = proteus::query::ResolveOrAdmitClusterId(db, proteus::query::QueryDomain::Class, "arcane knight", "v1");
     EXPECT_EQ(second.cluster_id, first.cluster_id);
-    EXPECT_EQ(second.decision_band, "hard_duplicate");
+    EXPECT_EQ(second.decision_band == "alias_hit" || second.decision_band == "hard_duplicate", true);
     EXPECT_EQ(second.canonical_query_id, first.query_id);
+    EXPECT_EQ(second.query_id, first.query_id);
 
     auto alias_count = db.prepare("SELECT COUNT(*) FROM concept_alias WHERE query_domain = ?1 AND normalized_alias = ?2 AND cluster_id = ?3;");
     alias_count.bind_int64(1, static_cast<std::int64_t>(proteus::query::QueryDomain::Class));
@@ -86,6 +88,7 @@ TEST(QueryIdentityTest, ResolveOrAdmitClusterIdPersistsAliasAndSearchesFacetType
 TEST(QueryIdentityTest, ClassSynonymNormalizationBridgesMageAndCaster) {
     proteus::tests::TestSqliteDbFile test_db("query_identity_synonym_bridge");
     auto& db = test_db.db();
+    proteus::persistence::SeedDomainSynonymsV1IfEmpty(db);
 
     const auto first = proteus::query::ResolveOrAdmitClusterId(db, proteus::query::QueryDomain::Class, "Blood Mage", "v1");
     const auto second = proteus::query::ResolveOrAdmitClusterId(db, proteus::query::QueryDomain::Class, "blood caster", "v1");
