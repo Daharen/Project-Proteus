@@ -21,6 +21,13 @@ TEST(QueryIdentityTest, Hash64StableForSameInput) {
     EXPECT_EQ(h1, h2);
 }
 
+TEST(QueryIdentityTest, FingerprintV1Deterministic) {
+    const auto a = proteus::query::ComputeSemanticFingerprintV1("arcane knight");
+    const auto b = proteus::query::ComputeSemanticFingerprintV1("arcane knight");
+    EXPECT_EQ(a, b);
+    EXPECT_EQ(a.size(), static_cast<std::size_t>(512));
+}
+
 TEST(QueryIdentityTest, RegistryUpsertAndSimilarityWork) {
     proteus::tests::TestSqliteDbFile test_db("query_identity_registry");
 
@@ -47,4 +54,28 @@ TEST(QueryIdentityTest, SameTextDifferentDomainProducesDistinctIds) {
         const auto skill_id = proteus::query::GetOrCreateQueryId(db, "Arcane Knight", proteus::query::QueryDomain::Skill);
         EXPECT_EQ(class_id == skill_id, false);
     }
+}
+
+TEST(QueryIdentityTest, ResolveOrAdmitClusterIdPersistsAliasAndSearchesFacetTypes) {
+    proteus::tests::TestSqliteDbFile test_db("query_identity_cluster_alias");
+
+    auto& db = test_db.db();
+    const auto first = proteus::query::ResolveOrAdmitClusterId(db, proteus::query::QueryDomain::Class, "Arcane Knight", "v1");
+    EXPECT_EQ(first.decision_band, "novel");
+    EXPECT_EQ(first.cluster_id.empty(), false);
+
+    const auto second = proteus::query::ResolveOrAdmitClusterId(db, proteus::query::QueryDomain::Class, "arcane knight", "v1");
+    EXPECT_EQ(second.cluster_id, first.cluster_id);
+    EXPECT_EQ(second.decision_band == "alias_hit" || second.decision_band == "hard_duplicate", true);
+
+    auto alias_count = db.prepare("SELECT COUNT(*) FROM concept_alias WHERE query_domain = ?1 AND normalized_alias = ?2 AND cluster_id = ?3;");
+    alias_count.bind_int64(1, static_cast<std::int64_t>(proteus::query::QueryDomain::Class));
+    alias_count.bind_text(2, "arcane knight");
+    alias_count.bind_text(3, first.cluster_id);
+    EXPECT_EQ(alias_count.step(), true);
+    EXPECT_EQ(alias_count.column_int64(0), 1);
+
+    const auto hits = proteus::query::SearchFacetTypes(db, proteus::query::QueryDomain::Class, "arc", 5);
+    EXPECT_EQ(hits.empty(), false);
+    EXPECT_EQ(hits.front().cluster_id, first.cluster_id);
 }

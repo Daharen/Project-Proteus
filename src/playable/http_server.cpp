@@ -614,11 +614,32 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
         try { body = nlohmann::json::parse(req.body); } catch (...) { send_json(res, 400, nlohmann::json{{"ok", false}}); return; }
         if (!body.contains("text") || !body.at("text").is_string()) { send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"text required"})}}); return; }
         const auto domain = parse_query_domain((body.contains("query_domain") && body.at("query_domain").is_string()) ? body.at("query_domain").get<std::string>() : std::string{"generic"});
+        const std::string thresholds_version = (body.contains("thresholds_version") && body.at("thresholds_version").is_string()) ? body.at("thresholds_version").get<std::string>() : std::string{"v1"};
         persistence::SqliteDb db; db.open(config.db_path); persistence::ensure_schema(db);
+        const auto cluster = query::ResolveOrAdmitClusterId(db, domain, body.at("text").get<std::string>(), thresholds_version);
         const auto resolved = query::ResolveQuery(db, body.at("text").get<std::string>(), 5, 0.2, domain);
         nlohmann::json similar = nlohmann::json::array({});
         for (const auto& item : resolved.similar) similar.push_back({{"query_id", static_cast<double>(item.query_id)}, {"score", item.score}});
-        send_json(res, 200, nlohmann::json{{"ok", true}, {"query_id", static_cast<double>(resolved.query_id)}, {"similar", similar}});
+        send_json(res, 200, nlohmann::json{{"ok", true}, {"query_id", static_cast<double>(resolved.query_id)}, {"cluster_id", cluster.cluster_id}, {"decision_band", cluster.decision_band}, {"score", cluster.score}, {"similar", similar}});
+    });
+
+    svr.Post("/api/facet-types/search", [config](const httplib::Request& req, httplib::Response& res) {
+        nlohmann::json body;
+        try { body = nlohmann::json::parse(req.body); } catch (...) { send_json(res, 400, nlohmann::json{{"ok", false}}); return; }
+        if (!body.contains("text") || !body.at("text").is_string()) { send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"text required"})}}); return; }
+        const auto domain = parse_query_domain((body.contains("query_domain") && body.at("query_domain").is_string()) ? body.at("query_domain").get<std::string>() : std::string{"generic"});
+        const int limit = body.contains("limit") && body.at("limit").is_number() ? std::max(1, std::min(25, static_cast<int>(body.at("limit").get<double>()))) : 8;
+        persistence::SqliteDb db; db.open(config.db_path); persistence::ensure_schema(db);
+        const auto rows = query::SearchFacetTypes(db, domain, body.at("text").get<std::string>(), limit);
+        nlohmann::json hits = nlohmann::json::array({});
+        for (const auto& row : rows) {
+            nlohmann::json aliases = nlohmann::json::array({});
+            for (const auto& alias : row.aliases) {
+                aliases.push_back(alias);
+            }
+            hits.push_back(nlohmann::json{{"cluster_id", row.cluster_id}, {"canonical_label", row.canonical_label}, {"aliases", aliases}, {"score", row.score}, {"prefix_match", row.prefix_match}});
+        }
+        send_json(res, 200, nlohmann::json{{"ok", true}, {"hits", hits}});
     });
 
     svr.Post("/api/funnel/bootstrap", [config](const httplib::Request& req, httplib::Response& res) {
