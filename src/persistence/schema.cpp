@@ -373,6 +373,92 @@ void migrate_9_to_10(SqliteDb& db) {
     );
 }
 
+void migrate_10_to_11(SqliteDb& db) {
+    db.exec(
+        "CREATE TABLE IF NOT EXISTS concept_cluster ("
+        "cluster_id TEXT PRIMARY KEY,"
+        "query_domain INTEGER NOT NULL,"
+        "canonical_label TEXT NOT NULL,"
+        "fingerprint_version INTEGER NOT NULL,"
+        "fingerprint_blob BLOB NOT NULL,"
+        "created_at_utc TEXT NOT NULL"
+        ");"
+    );
+    db.exec("CREATE INDEX IF NOT EXISTS idx_concept_cluster_domain ON concept_cluster(query_domain);");
+
+    db.exec(
+        "CREATE TABLE IF NOT EXISTS concept_alias ("
+        "query_domain INTEGER NOT NULL,"
+        "normalized_alias TEXT NOT NULL,"
+        "cluster_id TEXT NOT NULL,"
+        "created_at_utc TEXT NOT NULL,"
+        "PRIMARY KEY(query_domain, normalized_alias),"
+        "FOREIGN KEY(cluster_id) REFERENCES concept_cluster(cluster_id) ON DELETE CASCADE"
+        ");"
+    );
+    db.exec("CREATE INDEX IF NOT EXISTS idx_concept_alias_cluster ON concept_alias(cluster_id);");
+
+    db.exec(
+        "CREATE TABLE IF NOT EXISTS concept_similarity_log ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "query_domain INTEGER NOT NULL,"
+        "normalized_text TEXT NOT NULL,"
+        "thresholds_version TEXT NOT NULL,"
+        "candidate_cluster_id TEXT NOT NULL,"
+        "similarity_score REAL NOT NULL,"
+        "jaccard_score REAL NOT NULL,"
+        "edit_similarity REAL NOT NULL,"
+        "decision_band TEXT NOT NULL,"
+        "decision_reason TEXT NOT NULL,"
+        "created_at_utc TEXT NOT NULL"
+        ");"
+    );
+    db.exec("CREATE INDEX IF NOT EXISTS idx_concept_similarity_log_domain_text ON concept_similarity_log(query_domain, normalized_text);");
+
+    if (!column_exists(db, "query_bootstrap_proposals", "cluster_id")) {
+        db.exec("ALTER TABLE query_bootstrap_proposals ADD COLUMN cluster_id TEXT NOT NULL DEFAULT ''; ");
+    }
+    db.exec("CREATE INDEX IF NOT EXISTS idx_query_bootstrap_proposals_cluster_id ON query_bootstrap_proposals(cluster_id);");
+    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS uq_query_bootstrap_cluster_schema_idx ON query_bootstrap_proposals(cluster_id, schema_version, proposal_index);");
+}
+
+
+void migrate_11_to_12(SqliteDb& db) {
+    if (!column_exists(db, "concept_cluster", "canonical_query_id")) {
+        db.exec("ALTER TABLE concept_cluster ADD COLUMN canonical_query_id INTEGER NOT NULL DEFAULT 0;");
+    }
+    db.exec("CREATE INDEX IF NOT EXISTS idx_concept_cluster_domain_canonical_query ON concept_cluster(query_domain, canonical_query_id);");
+
+    db.exec(
+        "UPDATE concept_cluster "
+        "SET canonical_query_id = ("
+        "SELECT MIN(qbp.query_id) FROM query_bootstrap_proposals qbp WHERE qbp.cluster_id = concept_cluster.cluster_id"
+        ") "
+        "WHERE canonical_query_id = 0;"
+    );
+
+    db.exec(
+        "CREATE TABLE IF NOT EXISTS domain_synonyms ("
+        "query_domain INTEGER NOT NULL,"
+        "term TEXT NOT NULL,"
+        "canonical_term TEXT NOT NULL,"
+        "created_at_utc TEXT NOT NULL,"
+        "PRIMARY KEY(query_domain, term)"
+        ");"
+    );
+
+    const char* seeds[] = {"mage", "caster", "spellcaster", "arcanist", "witch", "sorcerer"};
+    for (const char* term : seeds) {
+        auto stmt = db.prepare(
+            "INSERT OR IGNORE INTO domain_synonyms(query_domain, term, canonical_term, created_at_utc) "
+            "VALUES(?1, ?2, 'caster', strftime('%Y-%m-%dT%H:%M:%fZ','now'));"
+        );
+        stmt.bind_int64(1, 1);
+        stmt.bind_text(2, term);
+        stmt.step();
+    }
+}
+
 void verify_sqlite_capabilities(SqliteDb& db, bool verbose) {
     auto fts_stmt = db.prepare("SELECT sqlite_compileoption_used('ENABLE_FTS5');");
     if (!fts_stmt.step() || fts_stmt.column_int64(0) == 0) {
@@ -402,6 +488,8 @@ void apply_migration(SqliteDb& db, int from_version) {
         case 7: migrate_7_to_8(db); return;
         case 8: migrate_8_to_9(db); return;
         case 9: migrate_9_to_10(db); return;
+        case 10: migrate_10_to_11(db); return;
+        case 11: migrate_11_to_12(db); return;
         default: throw std::runtime_error("Unsupported schema version: " + std::to_string(from_version));
     }
 }

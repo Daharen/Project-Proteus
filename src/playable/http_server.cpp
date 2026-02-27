@@ -310,6 +310,21 @@ int pick_random_port() {
     return dist(rng);
 }
 
+nlohmann::json load_bootstrap_proposals_for_cluster(persistence::SqliteDb& db, query::QueryDomain query_domain, const std::string& cluster_id, std::int64_t& out_query_id) {
+    out_query_id = query::ResolveCanonicalQueryIdForCluster(db, query_domain, cluster_id);
+    if (out_query_id <= 0) {
+        auto qstmt = db.prepare("SELECT MIN(query_id) FROM query_bootstrap_proposals WHERE query_domain = ?1 AND cluster_id = ?2;");
+        qstmt.bind_int64(1, static_cast<std::int64_t>(query_domain));
+        qstmt.bind_text(2, cluster_id);
+        if (qstmt.step()) {
+            out_query_id = qstmt.column_int64(0);
+        }
+    }
+    if (out_query_id <= 0) {
+        return nlohmann::json::array({});
+    }
+    return load_bootstrap_proposals(db, out_query_id, query_domain);
+}
 
 std::string query_param(const std::string& path, const std::string& key) {
     const auto qpos = path.find('?');
@@ -614,11 +629,32 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
         try { body = nlohmann::json::parse(req.body); } catch (...) { send_json(res, 400, nlohmann::json{{"ok", false}}); return; }
         if (!body.contains("text") || !body.at("text").is_string()) { send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"text required"})}}); return; }
         const auto domain = parse_query_domain((body.contains("query_domain") && body.at("query_domain").is_string()) ? body.at("query_domain").get<std::string>() : std::string{"generic"});
+        const std::string thresholds_version = (body.contains("thresholds_version") && body.at("thresholds_version").is_string()) ? body.at("thresholds_version").get<std::string>() : std::string{"v1"};
         persistence::SqliteDb db; db.open(config.db_path); persistence::ensure_schema(db);
+        const auto cluster = query::ResolveOrAdmitClusterId(db, domain, body.at("text").get<std::string>(), thresholds_version);
         const auto resolved = query::ResolveQuery(db, body.at("text").get<std::string>(), 5, 0.2, domain);
         nlohmann::json similar = nlohmann::json::array({});
         for (const auto& item : resolved.similar) similar.push_back({{"query_id", static_cast<double>(item.query_id)}, {"score", item.score}});
-        send_json(res, 200, nlohmann::json{{"ok", true}, {"query_id", static_cast<double>(resolved.query_id)}, {"similar", similar}});
+        send_json(res, 200, nlohmann::json{{"ok", true}, {"query_id", static_cast<double>(resolved.query_id)}, {"cluster_id", cluster.cluster_id}, {"decision_band", cluster.decision_band}, {"score", cluster.score}, {"similar", similar}});
+    });
+
+    svr.Post("/api/facet-types/search", [config](const httplib::Request& req, httplib::Response& res) {
+        nlohmann::json body;
+        try { body = nlohmann::json::parse(req.body); } catch (...) { send_json(res, 400, nlohmann::json{{"ok", false}}); return; }
+        if (!body.contains("text") || !body.at("text").is_string()) { send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"text required"})}}); return; }
+        const auto domain = parse_query_domain((body.contains("query_domain") && body.at("query_domain").is_string()) ? body.at("query_domain").get<std::string>() : std::string{"generic"});
+        const int limit = body.contains("limit") && body.at("limit").is_number() ? std::max(1, std::min(25, static_cast<int>(body.at("limit").get<double>()))) : 8;
+        persistence::SqliteDb db; db.open(config.db_path); persistence::ensure_schema(db);
+        const auto rows = query::SearchFacetTypes(db, domain, body.at("text").get<std::string>(), limit);
+        nlohmann::json hits = nlohmann::json::array({});
+        for (const auto& row : rows) {
+            nlohmann::json aliases = nlohmann::json::array({});
+            for (const auto& alias : row.aliases) {
+                aliases.push_back(alias);
+            }
+            hits.push_back(nlohmann::json{{"cluster_id", row.cluster_id}, {"canonical_label", row.canonical_label}, {"aliases", aliases}, {"score", row.score}, {"prefix_match", row.prefix_match}});
+        }
+        send_json(res, 200, nlohmann::json{{"ok", true}, {"hits", hits}});
     });
 
     svr.Post("/api/funnel/bootstrap", [config](const httplib::Request& req, httplib::Response& res) {
@@ -627,10 +663,32 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
         if (!body.contains("text") || !body.at("text").is_string()) { send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"text required"})}}); return; }
         const std::string raw_prompt = body.at("text").get<std::string>();
         const auto domain = parse_query_domain((body.contains("query_domain") && body.at("query_domain").is_string()) ? body.at("query_domain").get<std::string>() : std::string{"generic"});
+        const std::string thresholds_version = (body.contains("thresholds_version") && body.at("thresholds_version").is_string()) ? body.at("thresholds_version").get<std::string>() : std::string{"v1"};
         persistence::SqliteDb db; db.open(config.db_path); persistence::ensure_schema(db);
-        const std::int64_t query_id = query::GetOrCreateQueryId(db, raw_prompt, domain);
-        nlohmann::json payload = {{"ok", true}, {"query_id", static_cast<double>(query_id)}, {"status", "existing"}};
-        if (!bootstrap::QueryHasBootstrapProposals(db, query_id, domain)) {
+
+        const auto cluster = query::ResolveOrAdmitClusterId(db, domain, raw_prompt, thresholds_version);
+        std::cerr << "resolver_output normalized_text='" << cluster.normalized << "' cluster_id='" << cluster.cluster_id
+                  << "' decision_band='" << cluster.decision_band << "' score=" << cluster.score
+                  << " chosen_existing_query_id=" << cluster.canonical_query_id << "\n";
+
+        std::int64_t selected_query_id = cluster.canonical_query_id > 0 ? cluster.canonical_query_id : cluster.query_id;
+        nlohmann::json payload = {{"ok", true}, {"query_id", static_cast<double>(selected_query_id)}, {"cluster_id", cluster.cluster_id}, {"decision_band", cluster.decision_band}, {"score", cluster.score}};
+
+        if (cluster.decision_band == "hard_duplicate" || cluster.decision_band == "grey_duplicate") {
+            payload["status"] = "cluster_reuse";
+            payload["proposals"] = load_bootstrap_proposals(db, selected_query_id, domain);
+            send_json(res, 200, payload);
+            return;
+        }
+        if (cluster.decision_band == "grey_unresolved") {
+            payload["status"] = "needs_adjudication";
+            payload["proposals"] = nlohmann::json::array({});
+            send_json(res, 200, payload);
+            return;
+        }
+
+        const auto mode = parse_llm_mode_from_request(body);
+        if (!bootstrap::QueryHasBootstrapProposals(db, selected_query_id, domain)) {
             llm::LlmCacheClient llm_client;
             const auto& contract = bootstrap::GetDimensionContractForDomain(domain);
             const auto bootstrap_category = bootstrap::ResolveBootstrapCategory(bootstrap::BootstrapRoute::FunnelBootstrapV1, domain);
@@ -644,29 +702,25 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
                 .context_tokens = context_tokens
             });
             const auto request = llm::BuildDeterministicRequest("openai", "gpt-4.1-mini", "proteus_funnel_bootstrap_v1", 1, prompt_text, llm::LlmRequestKind::BootstrapFunnel, contract.kind, bootstrap_category);
-#if !defined(NDEBUG)
-            std::cerr << "bootstrap_prompt_hash=" << request.prompt_hash_hex << "\n";
-#endif
-            const auto mode = parse_llm_mode_from_request(body);
             const auto artifact_result = llm_client.TryGetOrCaptureArtifact(db, request, mode);
             if (artifact_result.status == llm::LlmArtifactStatus::CacheHit || artifact_result.status == llm::LlmArtifactStatus::CapturedAndCached) {
                 bool hard_failed = false;
                 std::string status;
                 import_with_single_semantic_retry(db, "", "", raw_prompt, context_tokens, domain, request, request.bootstrap_category, mode, llm_client, artifact_result, status, hard_failed);
                 payload["status"] = status;
-                if (hard_failed) {
-                    payload["ok"] = false;
-                }
+                if (hard_failed) payload["ok"] = false;
             } else if (artifact_result.status == llm::LlmArtifactStatus::CacheMissOffline) {
                 payload["status"] = "offline_cache_miss";
                 payload["placeholder"] = "No generated content available offline for this new entry. Try again when online.";
             } else {
                 payload["status"] = "provider_error";
                 payload["error_code"] = artifact_result.provider_error_code;
-                std::cerr << "Bootstrap provider error: error_code=" << artifact_result.provider_error_code << "\n";
             }
+        } else {
+            payload["status"] = "existing";
         }
-        payload["proposals"] = load_bootstrap_proposals(db, query_id, domain);
+
+        payload["proposals"] = load_bootstrap_proposals(db, selected_query_id, domain);
         send_json(res, 200, payload);
     });
 
@@ -719,11 +773,27 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
         );
         const std::string stable_player_id = context.stable_player_id.empty() ? session_id : context.stable_player_id;
 
-        const std::int64_t query_id = query::GetOrCreateQueryId(db, raw_prompt);
-        const bool has_bootstrap = bootstrap::QueryHasBootstrapProposals(db, query_id);
-        nlohmann::json bootstrap_payload = {{"status", "existing"}, {"query_id", static_cast<double>(query_id)}, {"synopsis", nullptr}, {"proposals", nlohmann::json::array({})}};
+        const auto cluster = query::ResolveOrAdmitClusterId(db, query::QueryDomain::Generic, raw_prompt, "v1");
+        std::cerr << "resolver_output normalized_text='" << cluster.normalized << "' cluster_id='" << cluster.cluster_id
+                  << "' decision_band='" << cluster.decision_band << "' score=" << cluster.score
+                  << " chosen_existing_query_id=" << cluster.canonical_query_id << "\n";
 
-        if (!has_bootstrap) {
+        std::int64_t selected_query_id = cluster.canonical_query_id > 0 ? cluster.canonical_query_id : cluster.query_id;
+        nlohmann::json bootstrap_payload = {
+            {"status", "existing"},
+            {"query_id", static_cast<double>(selected_query_id)},
+            {"cluster_id", cluster.cluster_id},
+            {"decision_band", cluster.decision_band},
+            {"score", cluster.score},
+            {"synopsis", nullptr},
+            {"proposals", nlohmann::json::array({})}
+        };
+
+        if (cluster.decision_band == "hard_duplicate" || cluster.decision_band == "grey_duplicate") {
+            bootstrap_payload["status"] = "cluster_reuse";
+        } else if (cluster.decision_band == "grey_unresolved") {
+            bootstrap_payload["status"] = "needs_adjudication";
+        } else if (!bootstrap::QueryHasBootstrapProposals(db, selected_query_id)) {
             llm::LlmCacheClient llm_client;
             const auto mode = parse_llm_mode();
             const auto bootstrap_category = bootstrap::ResolveBootstrapCategory(bootstrap::BootstrapRoute::QueryBootstrapV1, query::QueryDomain::Generic);
@@ -746,9 +816,6 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
                 bootstrap::DimensionKind::Class,
                 bootstrap_category
             );
-#if !defined(NDEBUG)
-            std::cerr << "bootstrap_prompt_hash=" << request.prompt_hash_hex << "\n";
-#endif
             const auto artifact_result = llm_client.TryGetOrCaptureArtifact(db, request, mode);
             if (artifact_result.status == llm::LlmArtifactStatus::CacheHit || artifact_result.status == llm::LlmArtifactStatus::CapturedAndCached) {
                 bool hard_failed = false;
@@ -769,11 +836,11 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
         }
 
         auto meta_stmt = db.prepare("SELECT synopsis FROM query_metadata WHERE query_id = ?1 LIMIT 1;");
-        meta_stmt.bind_int64(1, query_id);
+        meta_stmt.bind_int64(1, selected_query_id);
         if (meta_stmt.step()) {
             bootstrap_payload["synopsis"] = meta_stmt.column_text(0);
         }
-        bootstrap_payload["proposals"] = load_bootstrap_proposals(db, query_id, query::QueryDomain::Generic);
+        bootstrap_payload["proposals"] = load_bootstrap_proposals(db, selected_query_id, query::QueryDomain::Generic);
 
         send_json(res, 200, nlohmann::json{
             {"ok", true},
