@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace proteus::query {
@@ -37,6 +38,7 @@ struct ClusterResolution {
     double score = 0.0;
     std::string normalized;
     std::int64_t query_id = 0;
+    std::int64_t canonical_query_id = 0;
 };
 
 struct FacetTypeSearchHit {
@@ -73,6 +75,23 @@ QueryResolution ResolveQuery(
 
 std::vector<std::uint8_t> ComputeSemanticFingerprintV1(std::string_view normalized_text);
 
+struct FingerprintDebugInfo {
+    std::string normalized_text;
+    int fingerprint_version = 0;
+    int nonzero_bucket_count = 0;
+    std::string short_hash;
+    std::vector<std::pair<int, int>> top_k_buckets;
+};
+
+struct SimilarityScanRow {
+    std::string cluster_id;
+    std::string canonical_label;
+    double chargram_score = 0.0;
+    double token_score = 0.0;
+    double synonym_normalized_score = 0.0;
+    std::string decision_band;
+};
+
 ClusterResolution ResolveOrAdmitClusterId(
     persistence::SqliteDb& db,
     QueryDomain query_domain,
@@ -81,6 +100,14 @@ ClusterResolution ResolveOrAdmitClusterId(
 );
 
 std::vector<FacetTypeSearchHit> SearchFacetTypes(
+    persistence::SqliteDb& db,
+    QueryDomain query_domain,
+    const std::string& raw_text,
+    int limit
+);
+
+FingerprintDebugInfo DebugFingerprint(std::string_view raw_text, int top_k);
+std::vector<SimilarityScanRow> SimilarityScan(
     persistence::SqliteDb& db,
     QueryDomain query_domain,
     const std::string& raw_text,

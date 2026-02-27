@@ -63,10 +63,13 @@ TEST(QueryIdentityTest, ResolveOrAdmitClusterIdPersistsAliasAndSearchesFacetType
     const auto first = proteus::query::ResolveOrAdmitClusterId(db, proteus::query::QueryDomain::Class, "Arcane Knight", "v1");
     EXPECT_EQ(first.decision_band, "novel");
     EXPECT_EQ(first.cluster_id.empty(), false);
+    EXPECT_EQ(first.canonical_query_id, first.query_id);
 
     const auto second = proteus::query::ResolveOrAdmitClusterId(db, proteus::query::QueryDomain::Class, "arcane knight", "v1");
     EXPECT_EQ(second.cluster_id, first.cluster_id);
     EXPECT_EQ(second.decision_band == "alias_hit" || second.decision_band == "hard_duplicate", true);
+    EXPECT_EQ(second.canonical_query_id, first.query_id);
+    EXPECT_EQ(second.query_id, first.query_id);
 
     auto alias_count = db.prepare("SELECT COUNT(*) FROM concept_alias WHERE query_domain = ?1 AND normalized_alias = ?2 AND cluster_id = ?3;");
     alias_count.bind_int64(1, static_cast<std::int64_t>(proteus::query::QueryDomain::Class));

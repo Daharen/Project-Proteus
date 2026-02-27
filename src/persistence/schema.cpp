@@ -422,6 +422,31 @@ void migrate_10_to_11(SqliteDb& db) {
     db.exec("CREATE UNIQUE INDEX IF NOT EXISTS uq_query_bootstrap_cluster_schema_idx ON query_bootstrap_proposals(cluster_id, schema_version, proposal_index);");
 }
 
+void migrate_11_to_12(SqliteDb& db) {
+    if (!column_exists(db, "concept_cluster", "canonical_query_id")) {
+        db.exec("ALTER TABLE concept_cluster ADD COLUMN canonical_query_id INTEGER;");
+    }
+
+    db.exec(
+        "UPDATE concept_cluster SET canonical_query_id = ("
+        "SELECT MIN(qbp.query_id) FROM query_bootstrap_proposals qbp "
+        "WHERE qbp.cluster_id = concept_cluster.cluster_id AND qbp.query_domain = concept_cluster.query_domain"
+        ") WHERE canonical_query_id IS NULL;"
+    );
+
+    db.exec(
+        "CREATE TABLE IF NOT EXISTS domain_synonyms ("
+        "query_domain INTEGER NOT NULL,"
+        "term TEXT NOT NULL,"
+        "canonical_term TEXT NOT NULL,"
+        "mapping_version INTEGER NOT NULL,"
+        "created_at_utc TEXT NOT NULL,"
+        "PRIMARY KEY(query_domain, term)"
+        ");"
+    );
+    db.exec("CREATE INDEX IF NOT EXISTS idx_domain_synonyms_canonical ON domain_synonyms(query_domain, canonical_term);");
+}
+
 void verify_sqlite_capabilities(SqliteDb& db, bool verbose) {
     auto fts_stmt = db.prepare("SELECT sqlite_compileoption_used('ENABLE_FTS5');");
     if (!fts_stmt.step() || fts_stmt.column_int64(0) == 0) {
@@ -452,6 +477,7 @@ void apply_migration(SqliteDb& db, int from_version) {
         case 8: migrate_8_to_9(db); return;
         case 9: migrate_9_to_10(db); return;
         case 10: migrate_10_to_11(db); return;
+        case 11: migrate_11_to_12(db); return;
         default: throw std::runtime_error("Unsupported schema version: " + std::to_string(from_version));
     }
 }

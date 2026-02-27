@@ -159,7 +159,7 @@ bool ImportBootstrapArtifactForDomain(persistence::SqliteDb& db, const std::stri
         };
         const std::string pid = "bootstrap-c" + cluster_id + "-q" + std::to_string(query_id) + "-d" + std::to_string(static_cast<std::int64_t>(query_domain)) + "-s" + std::to_string(schema_version) + "-i" + std::to_string(i);
 
-        auto ins = db.prepare("INSERT INTO query_bootstrap_proposals(query_id, query_domain, cluster_id, schema_version, proposal_index, proposal_id, proposal_kind, proposal_json, proposal_title, proposal_body, choice_seed_hint, risk_profile) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, '', 'medium') ON CONFLICT(query_id, schema_version, proposal_index) DO UPDATE SET query_domain=excluded.query_domain, cluster_id=excluded.cluster_id, proposal_id=excluded.proposal_id, proposal_kind=excluded.proposal_kind, proposal_json=excluded.proposal_json, proposal_title=excluded.proposal_title, proposal_body=excluded.proposal_body;");
+        auto ins = db.prepare("INSERT INTO query_bootstrap_proposals(query_id, query_domain, cluster_id, schema_version, proposal_index, proposal_id, proposal_kind, proposal_json, proposal_title, proposal_body, choice_seed_hint, risk_profile) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, '', 'medium') ON CONFLICT(cluster_id, schema_version, proposal_index) DO UPDATE SET query_id=excluded.query_id, query_domain=excluded.query_domain, proposal_id=excluded.proposal_id, proposal_kind=excluded.proposal_kind, proposal_json=excluded.proposal_json, proposal_title=excluded.proposal_title, proposal_body=excluded.proposal_body;");
         ins.bind_int64(1, query_id);
         ins.bind_int64(2, static_cast<std::int64_t>(query_domain));
         ins.bind_text(3, cluster_id);
