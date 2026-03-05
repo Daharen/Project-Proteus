@@ -91,10 +91,6 @@ bool has_suffix(const std::string& value, const std::string& suffix) {
     return value.size() >= suffix.size() && value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
-void ensure_synonyms_seeded(persistence::SqliteDb& db, QueryDomain domain) {
-    (void)EnsureSeededDomainSynonyms(db, domain, kSynonymMapVersion);
-}
-
 std::string maybe_stem(std::string token) {
     const auto n = token.size();
     if (n > 4 && has_suffix(token, "ing")) {
@@ -471,7 +467,7 @@ QueryResolution ResolveQuery(persistence::SqliteDb& db, const std::string& raw_t
 ClusterResolution ResolveOrAdmitClusterId(persistence::SqliteDb& db, QueryDomain query_domain, const std::string& raw_text, const std::string& thresholds_version) {
     const std::string normalized = NormalizeQuery(raw_text);
 
-    ensure_synonyms_seeded(db, query_domain);
+    (void)EnsureSeededDomainSynonyms(db, query_domain, kSynonymMapVersion);
 
     const std::string normalized_for_similarity = normalize_with_synonyms(db, query_domain, normalized);
     const auto fingerprint_blob = ComputeSemanticFingerprintV1(normalized_for_similarity);
@@ -570,65 +566,79 @@ ClusterResolution ResolveOrAdmitClusterId(persistence::SqliteDb& db, QueryDomain
     return ClusterResolution{.cluster_id = cluster_id, .decision_band = "novel", .score = 0.0, .normalized = normalized, .query_id = query_id, .canonical_query_id = query_id};
 }
 
+namespace {
+
+bool UpsertConceptAlias(persistence::SqliteDb& db, QueryDomain domain, const std::string& normalized_alias, const std::string& cluster_id) {
+    if (normalized_alias.empty() || cluster_id.empty()) {
+        return false;
+    }
+
+    auto stmt = db.prepare(
+        "INSERT INTO concept_alias(query_domain, normalized_alias, cluster_id, created_at_utc) "
+        "VALUES(?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
+        "ON CONFLICT(query_domain, normalized_alias) DO UPDATE SET cluster_id=excluded.cluster_id;"
+    );
+    stmt.bind_int64(1, static_cast<std::int64_t>(domain));
+    stmt.bind_text(2, normalized_alias);
+    stmt.bind_text(3, cluster_id);
+    stmt.step();
+    return true;
+}
+
+int UpsertDomainSynonym(persistence::SqliteDb& db, QueryDomain domain, const std::string& term, const std::string& canonical_term, int mapping_version) {
+    if (term.empty() || canonical_term.empty()) {
+        return 0;
+    }
+
+    auto stmt = db.prepare(
+        "INSERT INTO domain_synonyms(query_domain, term, canonical_term, mapping_version, created_at_utc) "
+        "VALUES(?1, ?2, ?3, ?4, strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
+        "ON CONFLICT(query_domain, term) DO UPDATE SET "
+        "canonical_term=excluded.canonical_term, mapping_version=excluded.mapping_version;"
+    );
+    stmt.bind_int64(1, static_cast<std::int64_t>(domain));
+    stmt.bind_text(2, term);
+    stmt.bind_text(3, canonical_term);
+    stmt.bind_int64(4, static_cast<std::int64_t>(mapping_version));
+    stmt.step();
+    return 1;
+}
+
+} // namespace
+
 ClusterAdjudicationResult AdjudicateClusterAliasAndSynonyms(
     persistence::SqliteDb& db,
     QueryDomain query_domain,
     const std::string& raw_text,
-    const std::string& target_cluster_id,
-    const std::vector<std::pair<std::string, std::string>>& token_synonyms_to_add,
-    int mapping_version
+    const std::string& chosen_cluster_id,
+    const std::vector<std::pair<std::string, std::string>>& synonym_upserts,
+    int synonym_mapping_version
 ) {
     ClusterAdjudicationResult out;
+    out.ok = false;
+
+    if (chosen_cluster_id.empty()) {
+        return out;
+    }
 
     const std::string normalized = NormalizeQuery(raw_text);
     if (normalized.empty()) {
-        throw std::runtime_error("AdjudicateClusterAliasAndSynonyms: empty normalized input");
-    }
-    if (target_cluster_id.empty()) {
-        throw std::runtime_error("AdjudicateClusterAliasAndSynonyms: empty target_cluster_id");
+        return out;
     }
 
-    upsert_alias_to_cluster(db, query_domain, normalized, target_cluster_id);
-    out.alias_written = true;
+    out.alias_written = UpsertConceptAlias(db, query_domain, normalized, chosen_cluster_id);
 
-    int inserted = 0;
-    for (const auto& p : token_synonyms_to_add) {
-        const std::string term = NormalizeQuery(p.first);
-        const std::string canonical = NormalizeQuery(p.second);
-
-        if (!is_single_token(term) || !is_single_token(canonical)) {
-            throw std::runtime_error("Adjudication synonym entries must be single-token after NormalizeQuery()");
-        }
-
-        inserted += upsert_domain_synonym(db, query_domain, term, canonical, mapping_version);
+    int wrote = 0;
+    for (const auto& kv : synonym_upserts) {
+        const std::string term_n = NormalizeQuery(kv.first);
+        const std::string canon_n = NormalizeQuery(kv.second);
+        wrote += UpsertDomainSynonym(db, query_domain, term_n, canon_n, synonym_mapping_version);
     }
-    out.synonyms_inserted = inserted;
+    out.synonyms_written = wrote;
 
-    const std::int64_t query_id = GetOrCreateQueryId(db, raw_text, query_domain);
-    const std::int64_t canonical_query_id = canonical_query_id_for_cluster(db, query_domain, target_cluster_id, query_id);
-
-    log_similarity_decision(
-        db,
-        query_domain,
-        normalized,
-        "adjudication",
-        target_cluster_id,
-        1.0,
-        1.0,
-        1.0,
-        "adjudicated",
-        "developer_adjudication"
-    );
-
-    out.resolution = ClusterResolution{
-        .cluster_id = target_cluster_id,
-        .decision_band = "adjudicated",
-        .score = 1.0,
-        .normalized = normalized,
-        .query_id = canonical_query_id,
-        .canonical_query_id = canonical_query_id,
-    };
-
+    out.ok = true;
+    out.cluster_id = chosen_cluster_id;
+    out.decision_band = "adjudicated";
     return out;
 }
 
@@ -639,32 +649,24 @@ ClusterGuess ResolveClusterGuess(
     const std::string& thresholds_version,
     int alternates_limit
 ) {
-    const int safe_limit = std::max(0, std::min(alternates_limit, 20));
+    (void)EnsureSeededDomainSynonyms(db, query_domain, kSynonymMapVersion);
 
     ClusterGuess out;
     out.best = ResolveOrAdmitClusterId(db, query_domain, raw_text, thresholds_version);
 
-    if (safe_limit == 0) {
-        out.can_force_novel = (out.best.decision_band != "novel");
-        return out;
-    }
+    const int lim = std::max(1, std::min(25, alternates_limit));
+    out.alternates = SearchFacetTypes(db, query_domain, raw_text, lim);
 
-    auto hits = SearchFacetTypes(db, query_domain, raw_text, safe_limit + 2);
-    hits.erase(
+    out.alternates.erase(
         std::remove_if(
-            hits.begin(),
-            hits.end(),
-            [&](const FacetTypeSearchHit& h) { return !out.best.cluster_id.empty() && h.cluster_id == out.best.cluster_id; }
+            out.alternates.begin(),
+            out.alternates.end(),
+            [&out](const FacetTypeSearchHit& h) { return h.cluster_id == out.best.cluster_id; }
         ),
-        hits.end()
+        out.alternates.end()
     );
 
-    if (static_cast<int>(hits.size()) > safe_limit) {
-        hits.resize(static_cast<std::size_t>(safe_limit));
-    }
-    out.alternates = std::move(hits);
-
-    out.can_force_novel = (out.best.decision_band != "novel");
+    out.force_novel_available = true;
     return out;
 }
 

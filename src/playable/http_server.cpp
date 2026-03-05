@@ -624,6 +624,86 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
         send_json(res, 200, nlohmann::json{{"ok", true}, {"query_id", static_cast<double>(resolved.query_id)}, {"canonical_query_id", static_cast<double>(cluster.canonical_query_id)}, {"cluster_id", cluster.cluster_id}, {"decision_band", cluster.decision_band}, {"score", cluster.score}, {"similar", similar}});
     });
 
+    svr.Post("/api/funnel/resolve_guess", [config](const httplib::Request& req, httplib::Response& res) {
+        nlohmann::json body;
+        try { body = nlohmann::json::parse(req.body); } catch (...) { send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"Malformed JSON"})}}); return; }
+
+        if (!body.contains("text") || !body.at("text").is_string()) { send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"text required"})}}); return; }
+
+        const auto domain = parse_query_domain((body.contains("query_domain") && body.at("query_domain").is_string()) ? body.at("query_domain").get<std::string>() : std::string{"generic"});
+        const std::string thresholds_version = (body.contains("thresholds_version") && body.at("thresholds_version").is_string()) ? body.at("thresholds_version").get<std::string>() : std::string{"v1"};
+        const int alternates_limit = body.contains("alternates_limit") && body.at("alternates_limit").is_number()
+            ? std::max(1, std::min(25, static_cast<int>(body.at("alternates_limit").get<double>())))
+            : 5;
+
+        persistence::SqliteDb db; db.open(config.db_path); persistence::ensure_schema(db);
+
+        const auto guess = query::ResolveClusterGuess(db, domain, body.at("text").get<std::string>(), thresholds_version, alternates_limit);
+
+        nlohmann::json alts = nlohmann::json::array({});
+        for (const auto& a : guess.alternates) {
+            nlohmann::json aliases = nlohmann::json::array({});
+            for (const auto& alias : a.aliases) {
+                aliases.push_back(alias);
+            }
+            alts.push_back(nlohmann::json{{"cluster_id", a.cluster_id}, {"canonical_label", a.canonical_label}, {"aliases", aliases}, {"score", a.score}, {"prefix_match", a.prefix_match}});
+        }
+
+        const auto& b = guess.best;
+        const nlohmann::json best = nlohmann::json{
+            {"cluster_id", b.cluster_id},
+            {"decision_band", b.decision_band},
+            {"score", b.score},
+            {"normalized", b.normalized},
+            {"query_id", static_cast<double>(b.query_id)},
+            {"canonical_query_id", static_cast<double>(b.canonical_query_id)}
+        };
+        send_json(res, 200, nlohmann::json{
+            {"ok", true},
+            {"best", best},
+            {"alternates", alts},
+            {"force_novel_available", guess.force_novel_available}
+        });
+    });
+
+    svr.Post("/api/funnel/adjudicate", [config](const httplib::Request& req, httplib::Response& res) {
+        nlohmann::json body;
+        try { body = nlohmann::json::parse(req.body); } catch (...) { send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"Malformed JSON"})}}); return; }
+
+        if (!body.contains("text") || !body.at("text").is_string()) { send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"text required"})}}); return; }
+        if (!body.contains("query_domain") || !body.at("query_domain").is_string()) { send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"query_domain required"})}}); return; }
+        if (!body.contains("chosen_cluster_id") || !body.at("chosen_cluster_id").is_string()) { send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"chosen_cluster_id required"})}}); return; }
+
+        const auto domain = parse_query_domain(body.at("query_domain").get<std::string>());
+        const std::string text = body.at("text").get<std::string>();
+        const std::string chosen = body.at("chosen_cluster_id").get<std::string>();
+        const int mapping_version = body.contains("mapping_version") && body.at("mapping_version").is_number()
+            ? std::max(1, std::min(9999, static_cast<int>(body.at("mapping_version").get<double>())))
+            : 1;
+
+        std::vector<std::pair<std::string, std::string>> synonym_upserts;
+        if (body.contains("synonyms") && body.at("synonyms").is_array()) {
+            for (const auto& item : body.at("synonyms")) {
+                if (!item.is_object()) { continue; }
+                if (!item.contains("term") || !item.at("term").is_string()) { continue; }
+                if (!item.contains("canonical_term") || !item.at("canonical_term").is_string()) { continue; }
+                synonym_upserts.emplace_back(item.at("term").get<std::string>(), item.at("canonical_term").get<std::string>());
+            }
+        }
+
+        persistence::SqliteDb db; db.open(config.db_path); persistence::ensure_schema(db);
+
+        const auto result = query::AdjudicateClusterAliasAndSynonyms(db, domain, text, chosen, synonym_upserts, mapping_version);
+
+        send_json(res, 200, nlohmann::json{
+            {"ok", result.ok},
+            {"cluster_id", result.cluster_id},
+            {"decision_band", result.decision_band},
+            {"alias_written", result.alias_written},
+            {"synonyms_written", result.synonyms_written}
+        });
+    });
+
     svr.Post("/api/facet-types/search", [config](const httplib::Request& req, httplib::Response& res) {
         nlohmann::json body;
         try { body = nlohmann::json::parse(req.body); } catch (...) { send_json(res, 400, nlohmann::json{{"ok", false}}); return; }

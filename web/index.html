@@ -1,22 +1,84 @@
 <!doctype html>
-<html>
-<head><meta charset="utf-8" /><title>Proteus v15 Funnel</title><link rel="stylesheet" href="/style.css" /></head>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Proteus v15 Funnel</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
 <body>
   <h1>Proteus v15 Funnel</h1>
-  <label>LLM Mode
-    <select id="llmMode"><option>OFFLINE</option><option>ONLINE_CAPTURE</option></select>
-  </label>
-  <div>
+
+  <div class="row">
+    <label for="llmMode">LLM Mode</label>
+    <select id="llmMode">
+      <option value="OFFLINE">OFFLINE</option>
+      <option value="ONLINE_CAPTURE" selected>ONLINE_CAPTURE</option>
+    </select>
+  </div>
+
+  <div class="row">
     <button class="modeBtn" data-mode="class">Class</button>
     <button class="modeBtn" data-mode="skill">Skill</button>
     <button class="modeBtn" data-mode="dialogue">Dialogue</button>
   </div>
-  <h3 id="stepTitle">Step: Choose mode</h3>
-  <textarea id="text" rows="3" placeholder="Type search text or 'Other' idea"></textarea><br/>
-  <button id="searchBtn">Search</button>
-  <button id="otherBtn">Other (bootstrap)</button>
+
+  <h2 id="stepTitle">Search class</h2>
+
+  <textarea id="text" rows="4" spellcheck="false"></textarea>
+
+  <div class="row">
+    <button id="searchBtn">Search</button>
+    <button id="otherBtn">Other (bootstrap)</button>
+  </div>
+
   <pre id="status"></pre>
+
   <div id="results"></div>
+
+  <hr />
+
+  <h2>Recognition</h2>
+
+  <div class="card">
+    <div class="row">
+      <div class="label">Best guess</div>
+      <div id="bestGuess"></div>
+      <button id="chooseBestBtn" disabled>Choose best</button>
+      <button id="forceNovelBtn" disabled>Force novel</button>
+    </div>
+
+    <div class="label">Alternates</div>
+    <div id="alternates"></div>
+  </div>
+
+  <h2>Developer Adjudication</h2>
+
+  <div class="card">
+    <div class="row">
+      <div class="label">Chosen cluster</div>
+      <div id="chosenCluster">None</div>
+    </div>
+
+    <div class="row">
+      <div class="label">Add synonym mapping (optional)</div>
+      <input id="synTerm" placeholder="term (e.g., beast)" />
+      <span>→</span>
+      <input id="synCanon" placeholder="canonical (e.g., animal)" />
+      <button id="addSynBtn">Add mapping</button>
+    </div>
+
+    <div class="row">
+      <div class="label">Pending synonym upserts</div>
+      <div id="synQueue"></div>
+    </div>
+
+    <div class="row">
+      <button id="adjudicateBtn" disabled>Write adjudication (alias + synonyms)</button>
+      <span id="adjudicateStatus"></span>
+    </div>
+  </div>
+
   <script src="/app.js"></script>
 </body>
 </html>
