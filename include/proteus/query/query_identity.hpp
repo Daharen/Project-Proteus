@@ -99,35 +99,6 @@ ClusterResolution ResolveOrAdmitClusterId(
     const std::string& thresholds_version
 );
 
-struct ClusterAdjudicationResult {
-    ClusterResolution resolution;
-    int synonyms_inserted = 0;
-    bool alias_written = false;
-};
-
-ClusterAdjudicationResult AdjudicateClusterAliasAndSynonyms(
-    persistence::SqliteDb& db,
-    QueryDomain query_domain,
-    const std::string& raw_text,
-    const std::string& target_cluster_id,
-    const std::vector<std::pair<std::string, std::string>>& token_synonyms_to_add,
-    int mapping_version
-);
-
-struct ClusterGuess {
-    ClusterResolution best;
-    std::vector<FacetTypeSearchHit> alternates;
-    bool can_force_novel = false;
-};
-
-ClusterGuess ResolveClusterGuess(
-    persistence::SqliteDb& db,
-    QueryDomain query_domain,
-    const std::string& raw_text,
-    const std::string& thresholds_version,
-    int alternates_limit
-);
-
 std::vector<FacetTypeSearchHit> SearchFacetTypes(
     persistence::SqliteDb& db,
     QueryDomain query_domain,
@@ -141,6 +112,37 @@ std::vector<SimilarityScanRow> SimilarityScan(
     QueryDomain query_domain,
     const std::string& raw_text,
     int limit
+);
+
+struct ClusterGuess {
+    ClusterResolution best;
+    std::vector<FacetTypeSearchHit> alternates;
+    bool force_novel_available = true;
+};
+
+struct ClusterAdjudicationResult {
+    bool ok = false;
+    std::string cluster_id;
+    std::string decision_band;
+    bool alias_written = false;
+    int synonyms_written = 0;
+};
+
+ClusterGuess ResolveClusterGuess(
+    persistence::SqliteDb& db,
+    QueryDomain query_domain,
+    const std::string& raw_text,
+    const std::string& thresholds_version,
+    int alternates_limit
+);
+
+ClusterAdjudicationResult AdjudicateClusterAliasAndSynonyms(
+    persistence::SqliteDb& db,
+    QueryDomain query_domain,
+    const std::string& raw_text,
+    const std::string& chosen_cluster_id,
+    const std::vector<std::pair<std::string, std::string>>& synonym_upserts,
+    int synonym_mapping_version
 );
 
 }  // namespace proteus::query

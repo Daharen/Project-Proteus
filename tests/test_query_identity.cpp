@@ -112,10 +112,11 @@ TEST(QueryIdentityTest, AdjudicationWritesAliasAndThenResolvesViaAliasHit) {
         {{"beast", "animal"}, {"summoner", "trainer"}},
         1
     );
+    EXPECT_EQ(adjudicated.ok, true);
     EXPECT_EQ(adjudicated.alias_written, true);
-    EXPECT_EQ(adjudicated.synonyms_inserted >= 1, true);
-    EXPECT_EQ(adjudicated.resolution.cluster_id, seed.cluster_id);
-    EXPECT_EQ(adjudicated.resolution.decision_band, "adjudicated");
+    EXPECT_EQ(adjudicated.synonyms_written >= 1, true);
+    EXPECT_EQ(adjudicated.cluster_id, seed.cluster_id);
+    EXPECT_EQ(adjudicated.decision_band, "adjudicated");
 
     const auto resolved = proteus::query::ResolveOrAdmitClusterId(db, proteus::query::QueryDomain::Class, "beast summoner", "test");
     EXPECT_EQ(resolved.decision_band, "alias_hit");

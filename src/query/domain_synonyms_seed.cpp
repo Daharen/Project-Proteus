@@ -1,92 +1,100 @@
 #include "proteus/query/domain_synonyms_seed.hpp"
 
-#include <stdexcept>
+#include <algorithm>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace proteus::query {
+
 namespace {
 
-bool is_single_token(const std::string& normalized) {
-    return normalized.find(' ') == std::string::npos && !normalized.empty();
+struct SeedPair {
+  const char* term;
+  const char* canonical;
+};
+
+std::vector<SeedPair> SeedPairsFor(QueryDomain domain, int mapping_version) {
+  std::vector<SeedPair> out;
+
+  if (mapping_version == 1 && domain == QueryDomain::Class) {
+    out.push_back({"beast", "animal"});
+    out.push_back({"beasts", "animal"});
+    out.push_back({"summoner", "trainer"});
+    out.push_back({"summoning", "training"});
+    out.push_back({"tamer", "trainer"});
+    out.push_back({"taming", "training"});
+    out.push_back({"ranger", "hunter"});
+    out.push_back({"archer", "bowman"});
+    out.push_back({"assassin", "killer"});
+    out.push_back({"rogue", "thief"});
+  }
+
+  return out;
 }
 
-std::vector<std::pair<std::string, std::string>> class_domain_seed_pairs_v1() {
-    return {
-        {"beast", "animal"},
-        {"creature", "animal"},
-        {"pet", "animal"},
-        {"summoner", "trainer"},
-        {"tamer", "trainer"},
-        {"handler", "trainer"},
-        {"wrangler", "trainer"},
-    };
+int CountExistingRows(persistence::SqliteDb& db, QueryDomain domain, int mapping_version) {
+  auto stmt = db.prepare(
+    "SELECT COUNT(1) FROM domain_synonyms WHERE query_domain = ?1 AND mapping_version = ?2;"
+  );
+  stmt.bind_int64(1, static_cast<std::int64_t>(domain));
+  stmt.bind_int64(2, static_cast<std::int64_t>(mapping_version));
+  if (!stmt.step()) {
+    return 0;
+  }
+  return static_cast<int>(stmt.column_int64(0));
 }
 
-int count_rows_for(persistence::SqliteDb& db, QueryDomain domain, int mapping_version) {
-    auto stmt = db.prepare(
-        "SELECT COUNT(1) FROM domain_synonyms WHERE query_domain = ?1 AND mapping_version = ?2;"
-    );
-    stmt.bind_int64(1, static_cast<std::int64_t>(domain));
-    stmt.bind_int64(2, static_cast<std::int64_t>(mapping_version));
-    if (!stmt.step()) return 0;
-    return static_cast<int>(stmt.column_int64(0));
+bool RowExists(persistence::SqliteDb& db, QueryDomain domain, const std::string& term) {
+  auto stmt = db.prepare(
+    "SELECT 1 FROM domain_synonyms WHERE query_domain = ?1 AND term = ?2 LIMIT 1;"
+  );
+  stmt.bind_int64(1, static_cast<std::int64_t>(domain));
+  stmt.bind_text(2, term);
+  return stmt.step();
 }
 
-int insert_ignore(
-    persistence::SqliteDb& db,
-    QueryDomain domain,
-    const std::string& term,
-    const std::string& canonical,
-    int mapping_version
-) {
-    auto stmt = db.prepare(
-        "INSERT OR IGNORE INTO domain_synonyms(query_domain, term, canonical_term, mapping_version, created_at_utc) "
-        "VALUES(?1, ?2, ?3, ?4, strftime('%Y-%m-%dT%H:%M:%fZ','now'));"
-    );
-    stmt.bind_int64(1, static_cast<std::int64_t>(domain));
-    stmt.bind_text(2, term);
-    stmt.bind_text(3, canonical);
-    stmt.bind_int64(4, static_cast<std::int64_t>(mapping_version));
-    stmt.step();
+int InsertIfMissing(persistence::SqliteDb& db, QueryDomain domain, const std::string& term, const std::string& canonical_term, int mapping_version) {
+  if (term.empty() || canonical_term.empty()) {
+    return 0;
+  }
+  if (RowExists(db, domain, term)) {
+    return 0;
+  }
 
-    auto changes = db.prepare("SELECT changes();");
-    if (!changes.step()) return 0;
-    return static_cast<int>(changes.column_int64(0));
+  auto stmt = db.prepare(
+    "INSERT OR IGNORE INTO domain_synonyms(query_domain, term, canonical_term, mapping_version, created_at_utc) "
+    "VALUES(?1, ?2, ?3, ?4, strftime('%Y-%m-%dT%H:%M:%fZ','now'));"
+  );
+  stmt.bind_int64(1, static_cast<std::int64_t>(domain));
+  stmt.bind_text(2, term);
+  stmt.bind_text(3, canonical_term);
+  stmt.bind_int64(4, static_cast<std::int64_t>(mapping_version));
+  stmt.step();
+
+  return 1;
 }
 
-}  // namespace
+} // namespace
 
 SynonymSeedStats EnsureSeededDomainSynonyms(persistence::SqliteDb& db, QueryDomain domain, int mapping_version) {
-    SynonymSeedStats out;
-    out.existing_rows = count_rows_for(db, domain, mapping_version);
+  SynonymSeedStats stats;
+  stats.existing_rows = CountExistingRows(db, domain, mapping_version);
 
-    if (out.existing_rows > 0) {
-        out.did_seed = false;
-        return out;
-    }
+  const auto pairs = SeedPairsFor(domain, mapping_version);
+  if (pairs.empty()) {
+    stats.did_seed = false;
+    return stats;
+  }
 
-    const auto now_pairs =
-        (domain == QueryDomain::Class && mapping_version == 1)
-            ? class_domain_seed_pairs_v1()
-            : std::vector<std::pair<std::string, std::string>>{};
+  int inserted = 0;
+  for (const auto& p : pairs) {
+    inserted += InsertIfMissing(db, domain, std::string(p.term), std::string(p.canonical), mapping_version);
+  }
 
-    int inserted = 0;
-    for (const auto& p : now_pairs) {
-        const std::string term = NormalizeQuery(p.first);
-        const std::string canonical = NormalizeQuery(p.second);
-
-        if (!is_single_token(term) || !is_single_token(canonical)) {
-            throw std::runtime_error("Seed synonym entries must be single-token after NormalizeQuery()");
-        }
-
-        inserted += insert_ignore(db, domain, term, canonical, mapping_version);
-    }
-
-    out.inserted_rows = inserted;
-    out.did_seed = inserted > 0;
-    return out;
+  stats.inserted_rows = inserted;
+  stats.did_seed = (inserted > 0);
+  return stats;
 }
 
-}  // namespace proteus::query
+} // namespace proteus::query
