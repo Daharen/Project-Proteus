@@ -32,6 +32,7 @@ add_library(proteus_core
     src/playable/retrieval_engine.cpp
     src/playable/http_server.cpp
     src/query/query_identity.cpp
+    src/query/domain_synonyms_seed.cpp
     src/llm/llm_cache_client.cpp
     src/bootstrap/import_novel_query_artifact.cpp
     src/bootstrap/dimension_contract_registry.cpp
