@@ -1,4 +1,5 @@
 #include "proteus/query/query_identity.hpp"
+#include "proteus/query/domain_synonyms_seed.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -88,6 +89,10 @@ std::vector<std::string> split_tokens(const std::string& normalized) {
 
 bool has_suffix(const std::string& value, const std::string& suffix) {
     return value.size() >= suffix.size() && value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+void ensure_synonyms_seeded(persistence::SqliteDb& db, QueryDomain domain) {
+    (void)EnsureSeededDomainSynonyms(db, domain, kSynonymMapVersion);
 }
 
 std::string maybe_stem(std::string token) {
@@ -251,6 +256,48 @@ void insert_alias(persistence::SqliteDb& db, QueryDomain domain, const std::stri
     ins_alias.bind_text(2, normalized);
     ins_alias.bind_text(3, cluster_id);
     ins_alias.step();
+}
+
+bool is_single_token(const std::string& normalized) {
+    return normalized.find(' ') == std::string::npos && !normalized.empty();
+}
+
+int upsert_domain_synonym(
+    persistence::SqliteDb& db,
+    QueryDomain domain,
+    const std::string& term_token,
+    const std::string& canonical_token,
+    int mapping_version
+) {
+    auto stmt = db.prepare(
+        "INSERT OR REPLACE INTO domain_synonyms(query_domain, term, canonical_term, mapping_version, created_at_utc) "
+        "VALUES(?1, ?2, ?3, ?4, strftime('%Y-%m-%dT%H:%M:%fZ','now'));"
+    );
+    stmt.bind_int64(1, static_cast<std::int64_t>(domain));
+    stmt.bind_text(2, term_token);
+    stmt.bind_text(3, canonical_token);
+    stmt.bind_int64(4, static_cast<std::int64_t>(mapping_version));
+    stmt.step();
+
+    auto changes = db.prepare("SELECT changes();");
+    if (!changes.step()) return 0;
+    return static_cast<int>(changes.column_int64(0));
+}
+
+void upsert_alias_to_cluster(
+    persistence::SqliteDb& db,
+    QueryDomain domain,
+    const std::string& normalized_alias,
+    const std::string& cluster_id
+) {
+    auto stmt = db.prepare(
+        "INSERT OR REPLACE INTO concept_alias(query_domain, normalized_alias, cluster_id, created_at_utc) "
+        "VALUES(?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ','now'));"
+    );
+    stmt.bind_int64(1, static_cast<std::int64_t>(domain));
+    stmt.bind_text(2, normalized_alias);
+    stmt.bind_text(3, cluster_id);
+    stmt.step();
 }
 
 void log_similarity_decision(
@@ -423,6 +470,9 @@ QueryResolution ResolveQuery(persistence::SqliteDb& db, const std::string& raw_t
 
 ClusterResolution ResolveOrAdmitClusterId(persistence::SqliteDb& db, QueryDomain query_domain, const std::string& raw_text, const std::string& thresholds_version) {
     const std::string normalized = NormalizeQuery(raw_text);
+
+    ensure_synonyms_seeded(db, query_domain);
+
     const std::string normalized_for_similarity = normalize_with_synonyms(db, query_domain, normalized);
     const auto fingerprint_blob = ComputeSemanticFingerprintV1(normalized_for_similarity);
     if (fingerprint_blob.size() != static_cast<std::size_t>(kFingerprintDims * 2)) {
@@ -518,6 +568,104 @@ ClusterResolution ResolveOrAdmitClusterId(persistence::SqliteDb& db, QueryDomain
 
     insert_alias(db, query_domain, normalized, cluster_id);
     return ClusterResolution{.cluster_id = cluster_id, .decision_band = "novel", .score = 0.0, .normalized = normalized, .query_id = query_id, .canonical_query_id = query_id};
+}
+
+ClusterAdjudicationResult AdjudicateClusterAliasAndSynonyms(
+    persistence::SqliteDb& db,
+    QueryDomain query_domain,
+    const std::string& raw_text,
+    const std::string& target_cluster_id,
+    const std::vector<std::pair<std::string, std::string>>& token_synonyms_to_add,
+    int mapping_version
+) {
+    ClusterAdjudicationResult out;
+
+    const std::string normalized = NormalizeQuery(raw_text);
+    if (normalized.empty()) {
+        throw std::runtime_error("AdjudicateClusterAliasAndSynonyms: empty normalized input");
+    }
+    if (target_cluster_id.empty()) {
+        throw std::runtime_error("AdjudicateClusterAliasAndSynonyms: empty target_cluster_id");
+    }
+
+    upsert_alias_to_cluster(db, query_domain, normalized, target_cluster_id);
+    out.alias_written = true;
+
+    int inserted = 0;
+    for (const auto& p : token_synonyms_to_add) {
+        const std::string term = NormalizeQuery(p.first);
+        const std::string canonical = NormalizeQuery(p.second);
+
+        if (!is_single_token(term) || !is_single_token(canonical)) {
+            throw std::runtime_error("Adjudication synonym entries must be single-token after NormalizeQuery()");
+        }
+
+        inserted += upsert_domain_synonym(db, query_domain, term, canonical, mapping_version);
+    }
+    out.synonyms_inserted = inserted;
+
+    const std::int64_t query_id = GetOrCreateQueryId(db, raw_text, query_domain);
+    const std::int64_t canonical_query_id = canonical_query_id_for_cluster(db, query_domain, target_cluster_id, query_id);
+
+    log_similarity_decision(
+        db,
+        query_domain,
+        normalized,
+        "adjudication",
+        target_cluster_id,
+        1.0,
+        1.0,
+        1.0,
+        "adjudicated",
+        "developer_adjudication"
+    );
+
+    out.resolution = ClusterResolution{
+        .cluster_id = target_cluster_id,
+        .decision_band = "adjudicated",
+        .score = 1.0,
+        .normalized = normalized,
+        .query_id = canonical_query_id,
+        .canonical_query_id = canonical_query_id,
+    };
+
+    return out;
+}
+
+ClusterGuess ResolveClusterGuess(
+    persistence::SqliteDb& db,
+    QueryDomain query_domain,
+    const std::string& raw_text,
+    const std::string& thresholds_version,
+    int alternates_limit
+) {
+    const int safe_limit = std::max(0, std::min(alternates_limit, 20));
+
+    ClusterGuess out;
+    out.best = ResolveOrAdmitClusterId(db, query_domain, raw_text, thresholds_version);
+
+    if (safe_limit == 0) {
+        out.can_force_novel = (out.best.decision_band != "novel");
+        return out;
+    }
+
+    auto hits = SearchFacetTypes(db, query_domain, raw_text, safe_limit + 2);
+    hits.erase(
+        std::remove_if(
+            hits.begin(),
+            hits.end(),
+            [&](const FacetTypeSearchHit& h) { return !out.best.cluster_id.empty() && h.cluster_id == out.best.cluster_id; }
+        ),
+        hits.end()
+    );
+
+    if (static_cast<int>(hits.size()) > safe_limit) {
+        hits.resize(static_cast<std::size_t>(safe_limit));
+    }
+    out.alternates = std::move(hits);
+
+    out.can_force_novel = (out.best.decision_band != "novel");
+    return out;
 }
 
 std::vector<FacetTypeSearchHit> SearchFacetTypes(persistence::SqliteDb& db, QueryDomain query_domain, const std::string& raw_text, int limit) {
