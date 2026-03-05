@@ -62,6 +62,32 @@ function renderAlternates(alts) {
   }
 }
 
+function coerceGuessShape(j) {
+  if (!j || !j.ok) return null;
+
+  // New shape already
+  if (j.best) return j;
+
+  // Old shape fallback: lift top-level fields into best.
+  if (j.cluster_id && j.decision_band) {
+    return {
+      ok: true,
+      best: {
+        cluster_id: j.cluster_id,
+        decision_band: j.decision_band,
+        score: j.score ?? 0,
+        normalized: j.normalized ?? '',
+        query_id: j.query_id ?? 0,
+        canonical_query_id: j.canonical_query_id ?? 0,
+      },
+      alternates: [],
+      force_novel_available: true,
+    };
+  }
+
+  return null;
+}
+
 function renderSynQueue() {
   const host = $('synQueue');
   host.innerHTML = '';
@@ -113,17 +139,18 @@ $('searchBtn').onclick = async () => {
   });
 
   lastGuess = j;
-  setStatus(j);
+  setStatus({ endpoint: 'resolve_guess', response: j });
 
-  if (!j || !j.ok) {
-    $('adjudicateStatus').textContent = 'resolve_guess failed.';
+  const g = coerceGuessShape(j);
+  if (!g) {
+    $('adjudicateStatus').textContent = 'resolve_guess failed or unexpected shape.';
     return;
   }
 
-  renderBest(j.best);
-  renderAlternates(j.alternates);
+  renderBest(g.best);
+  renderAlternates(g.alternates);
 
-  $('forceNovelBtn').disabled = !(j.force_novel_available === true);
+  $('forceNovelBtn').disabled = !(g.force_novel_available === true);
   $('forceNovelBtn').onclick = async () => {
     const boot = await post('/api/funnel/bootstrap', {
       text,
@@ -135,7 +162,7 @@ $('searchBtn').onclick = async () => {
   };
 
   $('chooseBestBtn').onclick = () => {
-    chosenClusterId = j.best.cluster_id;
+    chosenClusterId = g.best.cluster_id;
     $('chosenCluster').textContent = chosenClusterId;
     $('adjudicateBtn').disabled = !chosenClusterId;
     $('adjudicateStatus').textContent = 'Best guess selected for adjudication.';
