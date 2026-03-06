@@ -39,18 +39,32 @@
   <hr />
 
   <h2>Recognition</h2>
-  <p>Best guess is always shown from <code>/api/funnel/resolve_guess</code>; select an alternate to override.</p>
+  <p>Closest existing match is populated from nearest existing canonical clusters.</p>
 
   <div class="card">
     <div class="row">
-      <div class="label">Best guess</div>
-      <div id="bestGuess"></div>
-      <button id="chooseBestBtn" disabled>Choose best</button>
+      <div class="label">Resolver outcome</div>
+      <div id="resolverOutcome"></div>
+      <span id="resolutionBadge" class="badge"></span>
+    </div>
+
+    <div class="row">
+      <div class="label">Closest existing match</div>
+      <div id="closestExisting"></div>
+      <button id="chooseClosestBtn" disabled>Choose closest</button>
       <button id="forceNovelBtn" disabled>Force novel</button>
+    </div>
+
+    <div class="row">
+      <div class="label">Recognition confidence</div>
+      <div id="recognitionConfidence"></div>
     </div>
 
     <div class="label">Alternates</div>
     <div id="alternates"></div>
+
+    <div class="label">Narrowing prompt</div>
+    <div id="recognitionPrompt"></div>
   </div>
 
   <h2>Developer Adjudication</h2>

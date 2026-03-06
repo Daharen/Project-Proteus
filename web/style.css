@@ -8,4 +8,13 @@ hr { margin: 18px 0; }
 .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px; margin: 10px 0; background: #fff; }
 input { padding: 6px 8px; }
 #alternates button { display: block; margin: 6px 0; }
-#bestGuess { font-family: monospace; }
+#closestExisting { font-family: monospace; }
+.badge { display: inline-block; border-radius: 999px; padding: 2px 8px; font-size: 12px; background: #eaeaea; }
+.band-novel { background: #ffe7cc; }
+.band-alias_hit, .band-hard_duplicate, .band-grey_duplicate { background: #d8f5d1; }
+.band-requires_server_adjudication { background: #fff5c2; }
+.confidence-strong { color: #176d2a; font-weight: 700; }
+.confidence-weak { color: #9a6a00; font-weight: 700; }
+.confidence-exploratory { color: #555; font-style: italic; }
+#recognitionPrompt { margin-top: 8px; }
+.prompt-option { display: inline-block; margin: 4px 6px 0 0; padding: 2px 8px; border: 1px solid #ccc; border-radius: 999px; }
