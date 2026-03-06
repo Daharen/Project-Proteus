@@ -21,6 +21,8 @@ constexpr int kSynonymMapVersion = 1;
 constexpr int kCandidateLimit = 32;
 constexpr double kHardDuplicateThreshold = 0.92;
 constexpr double kGreyBandThreshold = 0.78;
+constexpr double kRecognitionStrongFloor = 0.70;
+constexpr double kRecognitionWeakFloor = 0.45;
 
 bool is_ascii_space(unsigned char c) {
     return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
@@ -644,6 +646,137 @@ ClusterAdjudicationResult AdjudicateClusterAliasAndSynonyms(
     return out;
 }
 
+
+std::vector<FacetTypeSearchHit> deduplicate_hits_by_cluster_id(const std::vector<FacetTypeSearchHit>& hits) {
+    std::vector<FacetTypeSearchHit> out;
+    out.reserve(hits.size());
+    std::unordered_set<std::string> seen;
+    for (const auto& hit : hits) {
+        if (seen.insert(hit.cluster_id).second) {
+            out.push_back(hit);
+        }
+    }
+    return out;
+}
+
+std::string confidence_band_for_score(double score, bool exploratory_mode) {
+    if (exploratory_mode) {
+        return "exploratory";
+    }
+    if (score >= kRecognitionStrongFloor) {
+        return "strong";
+    }
+    if (score >= kRecognitionWeakFloor) {
+        return "weak";
+    }
+    return "exploratory";
+}
+
+std::vector<RecognitionCandidate> to_recognition_candidates(
+    const std::vector<FacetTypeSearchHit>& hits,
+    int limit,
+    bool exploratory_mode
+) {
+    std::vector<RecognitionCandidate> out;
+    const int safe_limit = std::max(1, std::min(25, limit));
+    for (const auto& hit : hits) {
+        if (static_cast<int>(out.size()) >= safe_limit) {
+            break;
+        }
+        out.push_back(RecognitionCandidate{
+            .cluster_id = hit.cluster_id,
+            .canonical_label = hit.canonical_label,
+            .score = hit.score,
+            .prefix_match = hit.prefix_match,
+            .confidence_band = confidence_band_for_score(hit.score, exploratory_mode),
+        });
+    }
+    return out;
+}
+
+bool all_candidates_below_weak_floor(const std::vector<RecognitionCandidate>& candidates) {
+    if (candidates.empty()) {
+        return true;
+    }
+    for (const auto& candidate : candidates) {
+        if (candidate.score >= kRecognitionWeakFloor) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool label_too_similar(const std::vector<FacetTypeSearchHit>& picks, const std::string& candidate_label) {
+    const std::string normalized_candidate = NormalizeQuery(candidate_label);
+    for (const auto& pick : picks) {
+        const std::string normalized_pick = NormalizeQuery(pick.canonical_label);
+        if (normalized_pick == normalized_candidate) {
+            return true;
+        }
+        if (!normalized_pick.empty() && normalized_candidate.find(normalized_pick) != std::string::npos) {
+            return true;
+        }
+        if (!normalized_candidate.empty() && normalized_pick.find(normalized_candidate) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::vector<FacetTypeSearchHit> build_exploratory_hits(const std::vector<FacetTypeSearchHit>& nearest_hits, int limit) {
+    std::vector<FacetTypeSearchHit> out;
+    const int safe_limit = std::max(1, std::min(3, limit));
+    for (const auto& hit : nearest_hits) {
+        if (static_cast<int>(out.size()) >= safe_limit) {
+            break;
+        }
+        if (label_too_similar(out, hit.canonical_label)) {
+            continue;
+        }
+        out.push_back(hit);
+    }
+    for (const auto& hit : nearest_hits) {
+        if (static_cast<int>(out.size()) >= safe_limit) {
+            break;
+        }
+        const auto found = std::find_if(out.begin(), out.end(), [&](const FacetTypeSearchHit& existing) {
+            return existing.cluster_id == hit.cluster_id;
+        });
+        if (found == out.end()) {
+            out.push_back(hit);
+        }
+    }
+    return out;
+}
+
+RecognitionPrompt build_deterministic_prompt(const std::vector<RecognitionCandidate>& candidates) {
+    RecognitionPrompt prompt;
+    if (candidates.empty()) {
+        return prompt;
+    }
+
+    prompt.needed = true;
+    prompt.kind = "discriminator";
+    const std::size_t cap = std::min<std::size_t>(3, candidates.size());
+    prompt.options.reserve(cap);
+    for (std::size_t i = 0; i < cap; ++i) {
+        if (!candidates[i].canonical_label.empty()) {
+            prompt.options.push_back(candidates[i].canonical_label);
+        } else {
+            prompt.options.push_back(candidates[i].cluster_id);
+        }
+    }
+
+    if (prompt.options.size() == 1) {
+        prompt.prompt_text = "Is this concept closer to " + prompt.options[0] + "?";
+    } else if (prompt.options.size() == 2) {
+        prompt.prompt_text = "Is this concept closer to " + prompt.options[0] + " or " + prompt.options[1] + "?";
+    } else {
+        prompt.prompt_text = "Is this concept closer to " + prompt.options[0] + ", " + prompt.options[1] + ", or " + prompt.options[2] + "?";
+    }
+    return prompt;
+}
+
 ClusterGuess ResolveClusterGuess(
     persistence::SqliteDb& db,
     QueryDomain query_domain,
@@ -654,19 +787,29 @@ ClusterGuess ResolveClusterGuess(
     (void)EnsureSeededDomainSynonyms(db, query_domain, kSynonymMapVersion);
 
     ClusterGuess out;
-    out.best = ResolveOrAdmitClusterId(db, query_domain, raw_text, thresholds_version);
+    out.resolution = ResolveOrAdmitClusterId(db, query_domain, raw_text, thresholds_version);
 
     const int lim = std::max(1, std::min(25, alternates_limit));
-    out.alternates = SearchFacetTypes(db, query_domain, raw_text, lim);
+    auto nearest_hits = deduplicate_hits_by_cluster_id(SearchFacetTypes(db, query_domain, raw_text, lim));
 
-    out.alternates.erase(
-        std::remove_if(
-            out.alternates.begin(),
-            out.alternates.end(),
-            [&out](const FacetTypeSearchHit& h) { return h.cluster_id == out.best.cluster_id; }
-        ),
-        out.alternates.end()
-    );
+    if (out.resolution.decision_band == "novel") {
+        nearest_hits.erase(
+            std::remove_if(
+                nearest_hits.begin(),
+                nearest_hits.end(),
+                [&out](const FacetTypeSearchHit& hit) { return hit.cluster_id == out.resolution.cluster_id; }
+            ),
+            nearest_hits.end()
+        );
+    }
+
+    out.candidates = to_recognition_candidates(nearest_hits, lim, false);
+
+    if (out.candidates.empty() || all_candidates_below_weak_floor(out.candidates)) {
+        const auto exploratory_hits = build_exploratory_hits(nearest_hits, lim);
+        out.candidates = to_recognition_candidates(exploratory_hits, lim, true);
+        out.prompt = build_deterministic_prompt(out.candidates);
+    }
 
     out.force_novel_available = true;
     return out;

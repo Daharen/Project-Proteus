@@ -33,59 +33,74 @@ function resetAdjudicationUI() {
 }
 
 function clearRecognition() {
-  $('bestGuess').textContent = '';
+  $('resolverOutcome').textContent = '';
+  $('resolutionBadge').textContent = '';
+  $('closestExisting').textContent = '';
+  $('recognitionConfidence').textContent = '';
+  $('recognitionConfidence').className = '';
   $('alternates').innerHTML = '';
-  $('chooseBestBtn').disabled = true;
+  $('recognitionPrompt').innerHTML = '';
+  $('chooseClosestBtn').disabled = true;
   $('forceNovelBtn').disabled = true;
   resetAdjudicationUI();
 }
 
-function renderBest(best) {
-  const label = best.canonical_label || '(no canonical label)';
-  $('bestGuess').textContent = `${label} | ${best.cluster_id} (${best.decision_band}, ${Number(best.score || 0).toFixed(3)})`;
-  $('chooseBestBtn').disabled = false;
-
-  chosenClusterId = best.cluster_id;
-  $('chosenCluster').textContent = chosenClusterId;
-  $('adjudicateBtn').disabled = !chosenClusterId;
+function candidateText(c) {
+  const label = c.canonical_label || '(no canonical label)';
+  return `${label} | ${c.cluster_id} (${Number(c.score || 0).toFixed(3)})`;
 }
 
-function renderAlternates(alts) {
+function setChosenCluster(clusterId, msg) {
+  chosenClusterId = clusterId || '';
+  $('chosenCluster').textContent = chosenClusterId || 'None';
+  $('adjudicateBtn').disabled = !chosenClusterId;
+  if (msg) $('adjudicateStatus').textContent = msg;
+}
+
+function renderResolution(resolution) {
+  $('resolverOutcome').textContent = resolution?.decision_band || 'unknown';
+  $('resolutionBadge').textContent = resolution?.decision_band || '';
+  $('resolutionBadge').className = `badge band-${resolution?.decision_band || 'unknown'}`;
+}
+
+function renderRecognition(recognition) {
+  const closest = recognition?.closest_existing;
+  if (closest) {
+    $('closestExisting').textContent = candidateText(closest);
+    $('recognitionConfidence').textContent = closest.confidence_band || 'unknown';
+    $('recognitionConfidence').className = `confidence-${closest.confidence_band || 'exploratory'}`;
+    $('chooseClosestBtn').disabled = false;
+    setChosenCluster(closest.cluster_id);
+  } else {
+    $('closestExisting').textContent = '(none)';
+    $('recognitionConfidence').textContent = 'n/a';
+    $('chooseClosestBtn').disabled = true;
+  }
+
   const host = $('alternates');
   host.innerHTML = '';
-  for (const a of alts || []) {
-    const b = document.createElement('button');
-    const lbl = a.canonical_label ? `${a.canonical_label}` : a.cluster_id;
-    b.textContent = `${lbl} (${Number(a.score || 0).toFixed(3)})`;
-    b.onclick = () => {
-      chosenClusterId = a.cluster_id;
-      $('chosenCluster').textContent = chosenClusterId;
-      $('adjudicateBtn').disabled = !chosenClusterId;
-      $('adjudicateStatus').textContent = 'Selected alternate for adjudication.';
-    };
-    host.appendChild(b);
-  }
-}
-
-function renderSynQueue() {
-  const host = $('synQueue');
-  host.innerHTML = '';
-  if (synonymQueue.length === 0) {
-    host.textContent = '(empty)';
-    return;
-  }
-  synonymQueue.forEach((item, i) => {
+  for (const a of recognition?.alternates || []) {
     const row = document.createElement('div');
-    row.className = 'row';
-    const span = document.createElement('span');
-    span.textContent = `${item.term} → ${item.canonical_term}`;
-    const rm = document.createElement('button');
-    rm.textContent = 'Remove';
-    rm.onclick = () => { synonymQueue.splice(i, 1); renderSynQueue(); };
-    row.appendChild(span);
-    row.appendChild(rm);
+    const b = document.createElement('button');
+    b.textContent = `Choose ${candidateText(a)}`;
+    b.onclick = () => setChosenCluster(a.cluster_id, 'Selected alternate for adjudication.');
+    row.appendChild(b);
     host.appendChild(row);
-  });
+  }
+
+  const promptHost = $('recognitionPrompt');
+  promptHost.innerHTML = '';
+  if (recognition?.prompt?.needed) {
+    const q = document.createElement('div');
+    q.textContent = recognition.prompt.prompt_text;
+    promptHost.appendChild(q);
+    for (const option of recognition.prompt.options || []) {
+      const pill = document.createElement('span');
+      pill.className = 'prompt-option';
+      pill.textContent = option;
+      promptHost.appendChild(pill);
+    }
+  }
 }
 
 async function resolveGuess(text, query_domain) {
@@ -96,13 +111,17 @@ async function resolveGuess(text, query_domain) {
     limit: 8,
   });
   setStatus({ endpoint: 'resolve_guess', response: j });
-  if (!j || !j.ok || !j.best) {
+  if (!j || !j.ok || !j.resolution || !j.recognition) {
     $('adjudicateStatus').textContent = 'resolve_guess failed or unexpected shape.';
     return;
   }
 
-  renderBest(j.best);
-  renderAlternates(j.alternates || []);
+  renderResolution(j.resolution);
+  renderRecognition(j.recognition);
+
+  if (!j.recognition.closest_existing && (j.resolution.decision_band === 'alias_hit' || j.resolution.decision_band === 'hard_duplicate' || j.resolution.decision_band === 'grey_duplicate')) {
+    setChosenCluster(j.resolution.cluster_id);
+  }
 
   $('forceNovelBtn').disabled = !(j.force_novel_available === true);
   $('forceNovelBtn').onclick = async () => {
@@ -129,8 +148,10 @@ $('searchBtn').onclick = async () => {
   await resolveGuess(text, query_domain);
 };
 
-$('chooseBestBtn').onclick = () => {
-  $('adjudicateStatus').textContent = 'Best guess selected for adjudication.';
+$('chooseClosestBtn').onclick = () => {
+  if (chosenClusterId) {
+    $('adjudicateStatus').textContent = 'Closest existing selected for adjudication.';
+  }
 };
 
 $('otherBtn').onclick = async () => {
@@ -154,6 +175,27 @@ $('addSynBtn').onclick = () => {
   renderSynQueue();
   $('adjudicateStatus').textContent = 'Synonym mapping queued.';
 };
+
+function renderSynQueue() {
+  const host = $('synQueue');
+  host.innerHTML = '';
+  if (synonymQueue.length === 0) {
+    host.textContent = '(empty)';
+    return;
+  }
+  synonymQueue.forEach((item, i) => {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const span = document.createElement('span');
+    span.textContent = `${item.term} → ${item.canonical_term}`;
+    const rm = document.createElement('button');
+    rm.textContent = 'Remove';
+    rm.onclick = () => { synonymQueue.splice(i, 1); renderSynQueue(); };
+    row.appendChild(span);
+    row.appendChild(rm);
+    host.appendChild(row);
+  });
+}
 
 $('adjudicateBtn').onclick = async () => {
   if (!chosenClusterId) {

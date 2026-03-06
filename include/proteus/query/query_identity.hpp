@@ -114,9 +114,25 @@ std::vector<SimilarityScanRow> SimilarityScan(
     int limit
 );
 
+struct RecognitionCandidate {
+    std::string cluster_id;
+    std::string canonical_label;
+    double score = 0.0;
+    bool prefix_match = false;
+    std::string confidence_band;
+};
+
+struct RecognitionPrompt {
+    bool needed = false;
+    std::string kind;
+    std::string prompt_text;
+    std::vector<std::string> options;
+};
+
 struct ClusterGuess {
-    ClusterResolution best;
-    std::vector<FacetTypeSearchHit> alternates;
+    ClusterResolution resolution;
+    std::vector<RecognitionCandidate> candidates;
+    RecognitionPrompt prompt;
     bool force_novel_available = true;
 };
 
