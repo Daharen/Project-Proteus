@@ -566,9 +566,13 @@ ClusterResolution ResolveOrAdmitClusterId(persistence::SqliteDb& db, QueryDomain
     return ClusterResolution{.cluster_id = cluster_id, .decision_band = "novel", .score = 0.0, .normalized = normalized, .query_id = query_id, .canonical_query_id = query_id};
 }
 
-namespace {
-
-bool UpsertConceptAlias(persistence::SqliteDb& db, QueryDomain domain, const std::string& normalized_alias, const std::string& cluster_id) {
+bool UpsertClusterAlias(
+    persistence::SqliteDb& db,
+    QueryDomain domain,
+    const std::string& alias_text,
+    const std::string& cluster_id
+) {
+    const std::string normalized_alias = NormalizeQuery(alias_text);
     if (normalized_alias.empty() || cluster_id.empty()) {
         return false;
     }
@@ -586,7 +590,10 @@ bool UpsertConceptAlias(persistence::SqliteDb& db, QueryDomain domain, const std
 }
 
 int UpsertDomainSynonym(persistence::SqliteDb& db, QueryDomain domain, const std::string& term, const std::string& canonical_term, int mapping_version) {
-    if (term.empty() || canonical_term.empty()) {
+    const std::string normalized_term = NormalizeQuery(term);
+    const std::string normalized_canonical_term = NormalizeQuery(canonical_term);
+
+    if (normalized_term.empty() || normalized_canonical_term.empty()) {
         return 0;
     }
 
@@ -597,14 +604,12 @@ int UpsertDomainSynonym(persistence::SqliteDb& db, QueryDomain domain, const std
         "canonical_term=excluded.canonical_term, mapping_version=excluded.mapping_version;"
     );
     stmt.bind_int64(1, static_cast<std::int64_t>(domain));
-    stmt.bind_text(2, term);
-    stmt.bind_text(3, canonical_term);
+    stmt.bind_text(2, normalized_term);
+    stmt.bind_text(3, normalized_canonical_term);
     stmt.bind_int64(4, static_cast<std::int64_t>(mapping_version));
     stmt.step();
     return 1;
 }
-
-} // namespace
 
 ClusterAdjudicationResult AdjudicateClusterAliasAndSynonyms(
     persistence::SqliteDb& db,
@@ -621,18 +626,15 @@ ClusterAdjudicationResult AdjudicateClusterAliasAndSynonyms(
         return out;
     }
 
-    const std::string normalized = NormalizeQuery(raw_text);
-    if (normalized.empty()) {
+    if (NormalizeQuery(raw_text).empty()) {
         return out;
     }
 
-    out.alias_written = UpsertConceptAlias(db, query_domain, normalized, chosen_cluster_id);
+    out.alias_written = UpsertClusterAlias(db, query_domain, raw_text, chosen_cluster_id);
 
     int wrote = 0;
     for (const auto& kv : synonym_upserts) {
-        const std::string term_n = NormalizeQuery(kv.first);
-        const std::string canon_n = NormalizeQuery(kv.second);
-        wrote += UpsertDomainSynonym(db, query_domain, term_n, canon_n, synonym_mapping_version);
+        wrote += UpsertDomainSynonym(db, query_domain, kv.first, kv.second, synonym_mapping_version);
     }
     out.synonyms_written = wrote;
 
