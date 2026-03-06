@@ -1,9 +1,8 @@
 let mode = 'class';
 let selectedNpc = null;
-
-let lastGuess = null;
 let chosenClusterId = '';
 let synonymQueue = [];
+let lastSearch = { text: '', query_domain: '' };
 
 const $ = (id) => document.getElementById(id);
 
@@ -22,27 +21,33 @@ async function post(url, payload) {
   return r.json();
 }
 
-function setStatus(obj) {
-  $('status').textContent = JSON.stringify(obj, null, 2);
-}
+function setStatus(obj) { $('status').textContent = JSON.stringify(obj, null, 2); }
 
-function clearRecognition() {
-  lastGuess = null;
+function resetAdjudicationUI() {
   chosenClusterId = '';
   synonymQueue = [];
-  $('bestGuess').textContent = '';
-  $('alternates').innerHTML = '';
   $('chosenCluster').textContent = 'None';
-  $('synQueue').textContent = '';
+  $('synQueue').textContent = '(empty)';
   $('adjudicateStatus').textContent = '';
-  $('chooseBestBtn').disabled = true;
-  $('forceNovelBtn').disabled = true;
   $('adjudicateBtn').disabled = true;
 }
 
+function clearRecognition() {
+  $('bestGuess').textContent = '';
+  $('alternates').innerHTML = '';
+  $('chooseBestBtn').disabled = true;
+  $('forceNovelBtn').disabled = true;
+  resetAdjudicationUI();
+}
+
 function renderBest(best) {
-  $('bestGuess').textContent = `${best.cluster_id} (${best.decision_band}, ${Number(best.score || 0).toFixed(3)})`;
+  const label = best.canonical_label || '(no canonical label)';
+  $('bestGuess').textContent = `${label} | ${best.cluster_id} (${best.decision_band}, ${Number(best.score || 0).toFixed(3)})`;
   $('chooseBestBtn').disabled = false;
+
+  chosenClusterId = best.cluster_id;
+  $('chosenCluster').textContent = chosenClusterId;
+  $('adjudicateBtn').disabled = !chosenClusterId;
 }
 
 function renderAlternates(alts) {
@@ -62,32 +67,6 @@ function renderAlternates(alts) {
   }
 }
 
-function coerceGuessShape(j) {
-  if (!j || !j.ok) return null;
-
-  // New shape already
-  if (j.best) return j;
-
-  // Old shape fallback: lift top-level fields into best.
-  if (j.cluster_id && j.decision_band) {
-    return {
-      ok: true,
-      best: {
-        cluster_id: j.cluster_id,
-        decision_band: j.decision_band,
-        score: j.score ?? 0,
-        normalized: j.normalized ?? '',
-        query_id: j.query_id ?? 0,
-        canonical_query_id: j.canonical_query_id ?? 0,
-      },
-      alternates: [],
-      force_novel_available: true,
-    };
-  }
-
-  return null;
-}
-
 function renderSynQueue() {
   const host = $('synQueue');
   host.innerHTML = '';
@@ -95,31 +74,48 @@ function renderSynQueue() {
     host.textContent = '(empty)';
     return;
   }
-  for (let i = 0; i < synonymQueue.length; i++) {
-    const item = synonymQueue[i];
+  synonymQueue.forEach((item, i) => {
     const row = document.createElement('div');
     row.className = 'row';
     const span = document.createElement('span');
     span.textContent = `${item.term} → ${item.canonical_term}`;
     const rm = document.createElement('button');
     rm.textContent = 'Remove';
-    rm.onclick = () => {
-      synonymQueue.splice(i, 1);
-      renderSynQueue();
-    };
+    rm.onclick = () => { synonymQueue.splice(i, 1); renderSynQueue(); };
     row.appendChild(span);
     row.appendChild(rm);
     host.appendChild(row);
+  });
+}
+
+async function resolveGuess(text, query_domain) {
+  const j = await post('/api/funnel/resolve_guess', {
+    text,
+    query_domain,
+    thresholds_version: 'v1',
+    limit: 8,
+  });
+  setStatus({ endpoint: 'resolve_guess', response: j });
+  if (!j || !j.ok || !j.best) {
+    $('adjudicateStatus').textContent = 'resolve_guess failed or unexpected shape.';
+    return;
   }
+
+  renderBest(j.best);
+  renderAlternates(j.alternates || []);
+
+  $('forceNovelBtn').disabled = !(j.force_novel_available === true);
+  $('forceNovelBtn').onclick = async () => {
+    const boot = await post('/api/funnel/bootstrap', { text, query_domain, llm_mode: $('llmMode').value, thresholds_version: 'v1' });
+    setStatus(boot);
+  };
 }
 
 for (const b of document.querySelectorAll('.modeBtn')) {
   b.onclick = () => {
     mode = b.dataset.mode;
     selectedNpc = null;
-    $('stepTitle').textContent = mode === 'dialogue'
-      ? 'Dialogue Step A: Who do you want to talk to and why'
-      : `Search ${mode}`;
+    $('stepTitle').textContent = mode === 'dialogue' ? 'Dialogue Step A: Who do you want to talk to and why' : `Search ${mode}`;
     $('results').innerHTML = '';
     clearRecognition();
   };
@@ -127,71 +123,32 @@ for (const b of document.querySelectorAll('.modeBtn')) {
 
 $('searchBtn').onclick = async () => {
   clearRecognition();
-
   const text = $('text').value;
-  const qd = domainForMode();
+  const query_domain = domainForMode();
+  lastSearch = { text, query_domain };
+  await resolveGuess(text, query_domain);
+};
 
-  const j = await post('/api/funnel/resolve_guess', {
-    text,
-    query_domain: qd,
-    thresholds_version: 'v1',
-    alternates_limit: 5,
-  });
-
-  lastGuess = j;
-  setStatus({ endpoint: 'resolve_guess', response: j });
-
-  const g = coerceGuessShape(j);
-  if (!g) {
-    $('adjudicateStatus').textContent = 'resolve_guess failed or unexpected shape.';
-    return;
-  }
-
-  renderBest(g.best);
-  renderAlternates(g.alternates);
-
-  $('forceNovelBtn').disabled = !(g.force_novel_available === true);
-  $('forceNovelBtn').onclick = async () => {
-    const boot = await post('/api/funnel/bootstrap', {
-      text,
-      query_domain: qd,
-      llm_mode: $('llmMode').value,
-      thresholds_version: 'v1',
-    });
-    setStatus(boot);
-  };
-
-  $('chooseBestBtn').onclick = () => {
-    chosenClusterId = g.best.cluster_id;
-    $('chosenCluster').textContent = chosenClusterId;
-    $('adjudicateBtn').disabled = !chosenClusterId;
-    $('adjudicateStatus').textContent = 'Best guess selected for adjudication.';
-  };
+$('chooseBestBtn').onclick = () => {
+  $('adjudicateStatus').textContent = 'Best guess selected for adjudication.';
 };
 
 $('otherBtn').onclick = async () => {
   clearRecognition();
-
   const text = $('text').value;
-  const qd = domainForMode();
-
-  const j = await post('/api/funnel/bootstrap', {
-    text,
-    query_domain: qd,
-    llm_mode: $('llmMode').value,
-    thresholds_version: 'v1',
-  });
+  const query_domain = domainForMode();
+  const j = await post('/api/funnel/bootstrap', { text, query_domain, llm_mode: $('llmMode').value, thresholds_version: 'v1' });
   setStatus(j);
 };
 
 $('addSynBtn').onclick = () => {
   const term = ($('synTerm').value || '').trim();
-  const canon = ($('synCanon').value || '').trim();
-  if (!term || !canon) {
+  const canonical_term = ($('synCanon').value || '').trim();
+  if (!term || !canonical_term) {
     $('adjudicateStatus').textContent = 'Synonym term and canonical are required.';
     return;
   }
-  synonymQueue.push({ term, canonical_term: canon });
+  synonymQueue.push({ term, canonical_term });
   $('synTerm').value = '';
   $('synCanon').value = '';
   renderSynQueue();
@@ -199,27 +156,24 @@ $('addSynBtn').onclick = () => {
 };
 
 $('adjudicateBtn').onclick = async () => {
-  const text = $('text').value;
-  const qd = domainForMode();
-
   if (!chosenClusterId) {
     $('adjudicateStatus').textContent = 'Choose a cluster first.';
     return;
   }
 
   const payload = {
-    text,
-    query_domain: qd,
-    chosen_cluster_id: chosenClusterId,
-    mapping_version: 1,
+    query_domain: lastSearch.query_domain || domainForMode(),
+    cluster_id: chosenClusterId,
+    alias_text: lastSearch.text || $('text').value,
     synonyms: synonymQueue.slice(),
   };
 
   const j = await post('/api/funnel/adjudicate', payload);
-  setStatus(j);
+  setStatus({ endpoint: 'adjudicate', response: j });
 
   if (j && j.ok) {
     $('adjudicateStatus').textContent = `Adjudicated. alias_written=${j.alias_written} synonyms_written=${j.synonyms_written}`;
+    await resolveGuess(payload.alias_text, payload.query_domain);
   } else {
     $('adjudicateStatus').textContent = 'Adjudication failed.';
   }

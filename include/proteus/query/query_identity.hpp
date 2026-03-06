@@ -145,4 +145,19 @@ ClusterAdjudicationResult AdjudicateClusterAliasAndSynonyms(
     int synonym_mapping_version
 );
 
+bool UpsertClusterAlias(
+    persistence::SqliteDb& db,
+    QueryDomain query_domain,
+    const std::string& alias_text,
+    const std::string& cluster_id
+);
+
+int UpsertDomainSynonym(
+    persistence::SqliteDb& db,
+    QueryDomain query_domain,
+    const std::string& term,
+    const std::string& canonical_term,
+    int mapping_version
+);
+
 }  // namespace proteus::query
