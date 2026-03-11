@@ -123,26 +123,48 @@ TEST(QueryIdentityTest, AdjudicationWritesAliasAndThenResolvesViaAliasHit) {
     EXPECT_EQ(resolved.cluster_id, seed.cluster_id);
 }
 
-TEST(QueryIdentityTest, ResolveClusterGuessProvidesStableAlternatesWhenBestIsNovel) {
-    proteus::tests::TestSqliteDbFile test_db("query_identity_cluster_guess");
+TEST(QueryIdentityTest, ResolveClusterGuessNovelStillReturnsExistingRecognitionCandidates) {
+    proteus::tests::TestSqliteDbFile test_db("query_identity_cluster_guess_novel");
 
     auto& db = test_db.db();
     const auto c1 = proteus::query::ResolveOrAdmitClusterId(db, proteus::query::QueryDomain::Class, "arcane knight", "test");
     const auto c2 = proteus::query::ResolveOrAdmitClusterId(db, proteus::query::QueryDomain::Class, "storm wizard", "test");
     ASSERT_EQ(c1.cluster_id.empty(), false);
     ASSERT_EQ(c2.cluster_id.empty(), false);
-    ASSERT_EQ(c1.cluster_id == c2.cluster_id, false);
 
-    const auto g1 = proteus::query::ResolveClusterGuess(db, proteus::query::QueryDomain::Class, "shadow ranger", "test", 5);
-    const auto g2 = proteus::query::ResolveClusterGuess(db, proteus::query::QueryDomain::Class, "shadow ranger", "test", 5);
+    const auto g = proteus::query::ResolveClusterGuess(db, proteus::query::QueryDomain::Class, "shadow ranger", "test", 5);
 
-    EXPECT_EQ(g1.best.decision_band, "novel");
-    EXPECT_EQ(g1.best.cluster_id, g2.best.cluster_id);
-    EXPECT_EQ(g1.alternates.size() <= static_cast<std::size_t>(5), true);
-    EXPECT_EQ(g1.alternates.size(), g2.alternates.size());
+    EXPECT_EQ(g.resolution.decision_band, "novel");
+    EXPECT_EQ(g.candidates.empty(), false);
+    EXPECT_EQ(g.candidates.size() <= static_cast<std::size_t>(5), true);
+}
 
-    for (std::size_t i = 0; i < g1.alternates.size(); ++i) {
-        EXPECT_EQ(g1.alternates[i].cluster_id, g2.alternates[i].cluster_id);
-        EXPECT_EQ(g1.alternates[i].score, g2.alternates[i].score);
+TEST(QueryIdentityTest, ResolveClusterGuessExcludesFreshNovelClusterFromRecognitionCandidates) {
+    proteus::tests::TestSqliteDbFile test_db("query_identity_cluster_guess_exclude_novel");
+
+    auto& db = test_db.db();
+    (void)proteus::query::ResolveOrAdmitClusterId(db, proteus::query::QueryDomain::Class, "animal trainer", "test");
+
+    const auto g = proteus::query::ResolveClusterGuess(db, proteus::query::QueryDomain::Class, "beast summoner", "test", 8);
+
+    ASSERT_EQ(g.resolution.decision_band, "novel");
+    for (const auto& candidate : g.candidates) {
+        EXPECT_EQ(candidate.cluster_id == g.resolution.cluster_id, false);
     }
+}
+
+TEST(QueryIdentityTest, ResolveClusterGuessBuildsPromptWhenAllScoresAreWeak) {
+    proteus::tests::TestSqliteDbFile test_db("query_identity_cluster_guess_prompt");
+
+    auto& db = test_db.db();
+    (void)proteus::query::ResolveOrAdmitClusterId(db, proteus::query::QueryDomain::Class, "arcane knight", "test");
+    (void)proteus::query::ResolveOrAdmitClusterId(db, proteus::query::QueryDomain::Class, "storm wizard", "test");
+    (void)proteus::query::ResolveOrAdmitClusterId(db, proteus::query::QueryDomain::Class, "animal trainer", "test");
+
+    const auto g = proteus::query::ResolveClusterGuess(db, proteus::query::QueryDomain::Class, "zzzxqv", "test", 3);
+
+    ASSERT_EQ(g.candidates.empty(), false);
+    EXPECT_EQ(g.prompt.needed, true);
+    EXPECT_EQ(g.prompt.kind, "discriminator");
+    EXPECT_EQ(g.prompt.prompt_text.empty(), false);
 }

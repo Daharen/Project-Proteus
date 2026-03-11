@@ -640,36 +640,58 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
 
         persistence::SqliteDb db; db.open(config.db_path); persistence::ensure_schema(db);
 
-        const auto resolver = query::ResolveOrAdmitClusterId(db, domain, text, thresholds_version);
-        const auto facet_hits = query::SearchFacetTypes(db, domain, text, limit);
+        const auto guess = query::ResolveClusterGuess(db, domain, text, thresholds_version, limit);
 
-        std::string canonical_label;
+        nlohmann::json closest_existing = nullptr;
         nlohmann::json alternates = nlohmann::json::array({});
-        for (const auto& hit : facet_hits) {
-            if (hit.cluster_id == resolver.cluster_id && canonical_label.empty()) {
-                canonical_label = hit.canonical_label;
+        if (!guess.candidates.empty()) {
+            const auto& best = guess.candidates.front();
+            closest_existing = nlohmann::json{
+                {"cluster_id", best.cluster_id},
+                {"canonical_label", best.canonical_label},
+                {"score", best.score},
+                {"confidence_band", best.confidence_band},
+                {"prefix_match", best.prefix_match}
+            };
+            for (std::size_t i = 1; i < guess.candidates.size(); ++i) {
+                const auto& alt = guess.candidates[i];
+                alternates.push_back(nlohmann::json{
+                    {"cluster_id", alt.cluster_id},
+                    {"canonical_label", alt.canonical_label},
+                    {"score", alt.score},
+                    {"confidence_band", alt.confidence_band},
+                    {"prefix_match", alt.prefix_match}
+                });
             }
-            if (hit.cluster_id == resolver.cluster_id) {
-                continue;
-            }
-            alternates.push_back(nlohmann::json{
-                {"cluster_id", hit.cluster_id},
-                {"canonical_label", hit.canonical_label},
-                {"score", hit.score},
-                {"prefix_match", hit.prefix_match}
-            });
         }
+
+        nlohmann::json prompt_options = nlohmann::json::array({});
+        for (const auto& option : guess.prompt.options) {
+            prompt_options.push_back(option);
+        }
+        const auto prompt = nlohmann::json{
+            {"needed", guess.prompt.needed},
+            {"kind", guess.prompt.kind.empty() ? "none" : guess.prompt.kind},
+            {"prompt_text", guess.prompt.prompt_text},
+            {"options", prompt_options}
+        };
 
         send_json(res, 200, nlohmann::json{
             {"ok", true},
-            {"query_id", static_cast<double>(resolver.query_id)},
-            {"canonical_query_id", static_cast<double>(resolver.canonical_query_id)},
-            {"cluster_id", resolver.cluster_id},
-            {"decision_band", resolver.decision_band},
-            {"score", resolver.score},
-            {"best", nlohmann::json{{"cluster_id", resolver.cluster_id}, {"canonical_label", canonical_label}, {"score", resolver.score}, {"decision_band", resolver.decision_band}}},
-            {"alternates", alternates},
-            {"force_novel_available", true}
+            {"resolution", nlohmann::json{
+                {"cluster_id", guess.resolution.cluster_id},
+                {"decision_band", guess.resolution.decision_band},
+                {"score", guess.resolution.score},
+                {"normalized", guess.resolution.normalized},
+                {"query_id", static_cast<double>(guess.resolution.query_id)},
+                {"canonical_query_id", static_cast<double>(guess.resolution.canonical_query_id)}
+            }},
+            {"recognition", nlohmann::json{
+                {"closest_existing", closest_existing},
+                {"alternates", alternates},
+                {"prompt", prompt}
+            }},
+            {"force_novel_available", guess.force_novel_available}
         });
     });
 
@@ -1046,14 +1068,48 @@ int run_self_test(const HttpServerConfig& config) {
     if (alias_guess.status != 200 || !json_bool(alias_guess.json, "ok", false)) {
         throw std::runtime_error("self_test resolve_guess failed");
     }
-    if (!alias_guess.json.contains("best") || !alias_guess.json.at("best").is_object()) {
-        throw std::runtime_error("self_test resolve_guess missing best");
+    if (!alias_guess.json.contains("resolution") || !alias_guess.json.at("resolution").is_object()) {
+        throw std::runtime_error("self_test resolve_guess missing resolution");
     }
-    if (!alias_guess.json.contains("alternates") || !alias_guess.json.at("alternates").is_array()) {
-        throw std::runtime_error("self_test resolve_guess missing alternates");
+    if (!alias_guess.json.contains("recognition") || !alias_guess.json.at("recognition").is_object()) {
+        throw std::runtime_error("self_test resolve_guess missing recognition");
     }
-    if (alias_guess.json.at("best").at("cluster_id").get<std::string>().empty()) {
-        throw std::runtime_error("self_test resolve_guess best cluster empty");
+    if (!alias_guess.json.at("recognition").contains("alternates") || !alias_guess.json.at("recognition").at("alternates").is_array()) {
+        throw std::runtime_error("self_test resolve_guess missing recognition alternates");
+    }
+    if (!alias_guess.json.at("recognition").contains("closest_existing")) {
+        throw std::runtime_error("self_test resolve_guess missing recognition closest_existing");
+    }
+
+    std::string adjudication_cluster_id = alias_guess.json.at("resolution").at("cluster_id").get<std::string>();
+    if (alias_guess.json.at("recognition").contains("closest_existing") && alias_guess.json.at("recognition").at("closest_existing").is_object()) {
+        adjudication_cluster_id = alias_guess.json.at("recognition").at("closest_existing").at("cluster_id").get<std::string>();
+    }
+
+    auto adjudicated = client_request(port, "POST", "/api/funnel/adjudicate", nlohmann::json{
+        {"query_domain", "class"},
+        {"cluster_id", adjudication_cluster_id},
+        {"alias_text", "arcane knight alias"},
+        {"synonyms", nlohmann::json::array({})}
+    });
+    if (adjudicated.status != 200 || !json_bool(adjudicated.json, "ok", false)) {
+        throw std::runtime_error("self_test adjudicate failed");
+    }
+
+    auto alias_hit_guess = client_request(port, "POST", "/api/funnel/resolve_guess", nlohmann::json{
+        {"text", "arcane knight alias"},
+        {"query_domain", "class"},
+        {"thresholds_version", "v1"},
+        {"limit", 8}
+    });
+    if (alias_hit_guess.status != 200 || !json_bool(alias_hit_guess.json, "ok", false)) {
+        throw std::runtime_error("self_test alias-hit resolve_guess failed");
+    }
+    if (alias_hit_guess.json.at("resolution").at("decision_band").get<std::string>() != "alias_hit") {
+        throw std::runtime_error("self_test alias-hit decision band mismatch");
+    }
+    if (!alias_hit_guess.json.at("recognition").contains("closest_existing") || !alias_hit_guess.json.at("recognition").at("closest_existing").is_object()) {
+        throw std::runtime_error("self_test alias-hit recognition closest_existing missing");
     }
 
     auto query = client_request(port, "POST", "/query", nlohmann::json{
