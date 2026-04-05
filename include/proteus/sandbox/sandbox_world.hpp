@@ -1,9 +1,11 @@
 #pragma once
 
+#include "proteus/sandbox/sandbox_input.hpp"
 #include "proteus/sandbox/sandbox_types.hpp"
 
 #include <nlohmann/json.hpp>
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -15,7 +17,9 @@ public:
 
     void reset();
     void step_once();
+    void step_once_with_input(const std::optional<SandboxPlayerInput>& player_input);
     void step_n(int steps);
+    void step_n_with_input(int steps, const std::optional<SandboxPlayerInput>& player_input);
 
     int tick() const { return tick_counter_; }
     double width() const { return map_width_; }

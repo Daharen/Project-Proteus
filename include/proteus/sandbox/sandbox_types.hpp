@@ -30,8 +30,13 @@ struct SandboxAgent {
     double radius = 12.0;
     std::string color_hex = "#ffffff";
     bool selected = false;
+    bool is_player_controlled = false;
+    double move_speed = 3.0;
+    double interaction_radius = 52.0;
     std::string last_action = "idle";
     std::string influence_summary;
+    std::string last_interaction;
+    std::string last_interaction_result;
     int target_object_id = -1;
     int target_agent_id = -1;
     AgentSemanticState semantic;

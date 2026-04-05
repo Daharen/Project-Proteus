@@ -2,9 +2,17 @@ const canvas = document.getElementById('worldCanvas');
 const ctx = canvas.getContext('2d');
 const summary = document.getElementById('summary');
 const editor = document.getElementById('editor');
+const selectionHeader = document.getElementById('selectionHeader');
+const runStatus = document.getElementById('runStatus');
+const playerStatus = document.getElementById('playerStatus');
+const interactionStatus = document.getElementById('interactionStatus');
+
+const PLAY_INTERVAL_MS = 100;
 
 let world = null;
 let selection = null;
+let runTimer = null;
+const keyState = { w: false, a: false, s: false, d: false, e: false };
 
 async function post(url, payload = {}) {
   const r = await fetch(url, {
@@ -59,8 +67,35 @@ function drawArrow(px, py, r, angle, color) {
   ctx.fill();
 }
 
+function selectedLabel(text, p, radiusPx) {
+  ctx.fillStyle = '#f8fafc';
+  ctx.font = '12px Inter, Arial, sans-serif';
+  ctx.fillText(text, p.x + radiusPx + 8, p.y - radiusPx - 8);
+}
+
+function getPlayerAgent() {
+  if (!world) return null;
+  return world.agents.find((a) => a.is_player_controlled) || null;
+}
+
+function updateStatusRow() {
+  const player = getPlayerAgent();
+  runStatus.textContent = `Status: ${runTimer ? 'Running' : 'Paused'}`;
+  playerStatus.textContent = player ? `Player: #${player.agent_id} (${player.label})` : 'Player: n/a';
+  interactionStatus.textContent = player && player.last_interaction_result
+    ? `Last interaction: ${player.last_interaction_result}`
+    : 'Last interaction: none';
+}
+
 function render() {
   if (!world) return;
+
+  if (selection?.type === 'agent' && !world.agents.some((a) => a.agent_id === selection.id)) {
+    selection = null;
+  }
+  if (selection?.type === 'object' && !world.objects.some((o) => o.object_id === selection.id)) {
+    selection = null;
+  }
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.strokeStyle = '#475569';
@@ -84,10 +119,11 @@ function render() {
 
     if (selection && selection.type === 'object' && selection.id === object.object_id) {
       ctx.strokeStyle = '#f8fafc';
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 3;
       ctx.beginPath();
       ctx.arc(p.x, p.y, object.interaction_radius * (canvas.width / world.map.width), 0, Math.PI * 2);
       ctx.stroke();
+      selectedLabel(`selected object #${object.object_id}`, p, radiusPx);
     }
   }
 
@@ -100,15 +136,28 @@ function render() {
     ctx.fill();
     drawArrow(p.x, p.y, radiusPx, agent.facing_radians, '#111827');
 
-    if (selection && selection.type === 'agent' && selection.id === agent.agent_id) {
-      ctx.strokeStyle = '#f8fafc';
+    if (agent.is_player_controlled) {
+      ctx.strokeStyle = '#fbbf24';
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(p.x, p.y, radiusPx + 5, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, radiusPx + 6, 0, Math.PI * 2);
       ctx.stroke();
+      ctx.fillStyle = '#fbbf24';
+      ctx.font = 'bold 11px Inter, Arial, sans-serif';
+      ctx.fillText('PLAYER', p.x - 20, p.y - radiusPx - 10);
+    }
+
+    if (selection && selection.type === 'agent' && selection.id === agent.agent_id) {
+      ctx.strokeStyle = '#f8fafc';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, radiusPx + 10, 0, Math.PI * 2);
+      ctx.stroke();
+      selectedLabel(`selected agent #${agent.agent_id}`, p, radiusPx);
     }
   }
 
+  updateStatusRow();
   renderInspector();
 }
 
@@ -121,25 +170,36 @@ function renderInspector() {
   if (!world) return;
 
   if (!selection) {
-    summary.textContent = `tick=${world.tick}\nSelect an agent or object to inspect/edit.`;
+    selectionHeader.textContent = 'Selected: No selection';
+    summary.textContent = `tick=${world.tick}\nselection: none\nSelect an agent or object to inspect/edit.`;
     editor.innerHTML = '';
     return;
   }
 
   if (selection.type === 'agent') {
-    const agent = world.agents.find(a => a.agent_id === selection.id);
-    if (!agent) return;
+    const agent = world.agents.find((a) => a.agent_id === selection.id);
+    if (!agent) {
+      selection = null;
+      renderInspector();
+      return;
+    }
+
+    selectionHeader.textContent = `Selected: Agent #${agent.agent_id}`;
     summary.textContent = [
       `tick=${world.tick}`,
+      `selection: agent ${agent.agent_id}`,
       `agent=${agent.label} (#${agent.agent_id})`,
+      `player_controlled=${agent.is_player_controlled}`,
       `pos=(${agent.x.toFixed(2)}, ${agent.y.toFixed(2)}) facing=${agent.facing_radians.toFixed(3)}`,
       `last_action=${agent.last_action}`,
       `target_object_id=${agent.target_object_id} target_agent_id=${agent.target_agent_id}`,
       `influence_summary=${agent.influence_summary}`,
+      `last_interaction=${agent.last_interaction || 'none'}`,
+      `last_interaction_result=${agent.last_interaction_result || 'none'}`,
     ].join('\n');
 
     editor.innerHTML = `
-      <h3>Agent semantic attachments</h3>
+      <h3>Agent semantic attachments ${agent.is_player_controlled ? '(player-controlled)' : ''}</h3>
       <form id="agentForm">
         ${numberInput('motivation', 'motivation', agent.semantic.motivation)}
         ${numberInput('affect', 'affect', agent.semantic.affect)}
@@ -176,7 +236,7 @@ function renderInspector() {
           ally_pull_weight: Number(f.get('ally_pull_weight')),
           rival_repulsion_weight: Number(f.get('rival_repulsion_weight')),
           idle_wander_weight: Number(f.get('idle_wander_weight')),
-        }
+        },
       };
       world = await post('/api/sandbox/agent/update', payload);
       render();
@@ -184,10 +244,17 @@ function renderInspector() {
     return;
   }
 
-  const object = world.objects.find(o => o.object_id === selection.id);
-  if (!object) return;
+  const object = world.objects.find((o) => o.object_id === selection.id);
+  if (!object) {
+    selection = null;
+    renderInspector();
+    return;
+  }
+
+  selectionHeader.textContent = `Selected: Object #${object.object_id}`;
   summary.textContent = [
     `tick=${world.tick}`,
+    `selection: object ${object.object_id}`,
     `object=${object.label} (#${object.object_id}) kind=${object.kind}`,
     `pos=(${object.x.toFixed(2)}, ${object.y.toFixed(2)})`,
   ].join('\n');
@@ -219,6 +286,39 @@ function renderInspector() {
   };
 }
 
+function playerInputPayload() {
+  const moveX = (keyState.d ? 1 : 0) + (keyState.a ? -1 : 0);
+  const moveY = (keyState.s ? 1 : 0) + (keyState.w ? -1 : 0);
+  return {
+    move_x: moveX,
+    move_y: moveY,
+    interact: keyState.e,
+  };
+}
+
+async function stepWorld(steps = 1) {
+  world = await post('/api/sandbox/step', {
+    steps,
+    player_input: playerInputPayload(),
+  });
+  render();
+}
+
+function startRunLoop() {
+  if (runTimer) return;
+  runTimer = setInterval(() => {
+    stepWorld(1);
+  }, PLAY_INTERVAL_MS);
+  updateStatusRow();
+}
+
+function stopRunLoop() {
+  if (!runTimer) return;
+  clearInterval(runTimer);
+  runTimer = null;
+  updateStatusRow();
+}
+
 canvas.addEventListener('click', (e) => {
   const rect = canvas.getBoundingClientRect();
   selection = hitTest(e.clientX - rect.left, e.clientY - rect.top);
@@ -226,18 +326,52 @@ canvas.addEventListener('click', (e) => {
 });
 
 document.getElementById('resetBtn').onclick = async () => {
+  stopRunLoop();
   world = await post('/api/sandbox/reset');
+  selection = null;
   render();
 };
 
 document.getElementById('stepBtn').onclick = async () => {
-  world = await post('/api/sandbox/step', { steps: 1 });
-  render();
+  await stepWorld(1);
 };
 
 document.getElementById('step10Btn').onclick = async () => {
-  world = await post('/api/sandbox/step', { steps: 10 });
-  render();
+  await stepWorld(10);
 };
+
+document.getElementById('playBtn').onclick = () => {
+  startRunLoop();
+};
+
+document.getElementById('pauseBtn').onclick = () => {
+  stopRunLoop();
+};
+
+const keyMap = {
+  w: 'w',
+  a: 'a',
+  s: 's',
+  d: 'd',
+  e: 'e',
+};
+
+function handleKey(event, isDown) {
+  const key = event.key.toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(keyMap, key)) {
+    return;
+  }
+  event.preventDefault();
+  keyState[keyMap[key]] = isDown;
+}
+
+window.addEventListener('keydown', (event) => handleKey(event, true));
+window.addEventListener('keyup', (event) => handleKey(event, false));
+
+window.addEventListener('blur', () => {
+  for (const key of Object.keys(keyState)) {
+    keyState[key] = false;
+  }
+});
 
 getState();
