@@ -34,6 +34,7 @@
 #include <mutex>
 #include <memory>
 #include <vector>
+#include <optional>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -461,8 +462,45 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
             }
         }
 
+        std::optional<sandbox::SandboxPlayerInput> player_input = std::nullopt;
+        if (body.contains("player_input")) {
+            if (!body.at("player_input").is_object()) {
+                send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"player_input must be object"})}});
+                return;
+            }
+            const auto& input = body.at("player_input");
+            sandbox::SandboxPlayerInput parsed;
+            if (input.contains("move_x")) {
+                if (!input.at("move_x").is_number()) {
+                    send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"player_input.move_x must be number"})}});
+                    return;
+                }
+                parsed.move_x = input.at("move_x").get<double>();
+            }
+            if (input.contains("move_y")) {
+                if (!input.at("move_y").is_number()) {
+                    send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"player_input.move_y must be number"})}});
+                    return;
+                }
+                parsed.move_y = input.at("move_y").get<double>();
+            }
+            if (input.contains("interact")) {
+                try {
+                    parsed.interact = input.at("interact").get<bool>();
+                } catch (const std::exception&) {
+                    send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"player_input.interact must be boolean"})}});
+                    return;
+                }
+            }
+            player_input = parsed;
+        }
+
         std::lock_guard<std::mutex> lock(*sandbox_mutex);
-        sandbox_world->step_n(steps);
+        if (player_input.has_value()) {
+            sandbox_world->step_n_with_input(steps, player_input);
+        } else {
+            sandbox_world->step_n(steps);
+        }
         send_json(res, 200, sandbox_world->to_json());
     });
 

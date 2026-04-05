@@ -6,14 +6,29 @@ body {
   color: #e2e8f0;
 }
 
-header, .controls {
+header, .controls, .status-row {
   display: flex;
   align-items: center;
   gap: 10px;
   margin-bottom: 10px;
+  flex-wrap: wrap;
 }
 
-header a { color: #93c5fd; }
+header a {
+  color: #93c5fd;
+}
+
+.status-row {
+  font-size: 13px;
+  color: #cbd5e1;
+}
+
+.status-row span {
+  border: 1px solid #334155;
+  border-radius: 6px;
+  padding: 4px 8px;
+  background: #0f172a;
+}
 
 main {
   display: grid;
@@ -25,6 +40,7 @@ canvas {
   width: 100%;
   border: 1px solid #334155;
   background: #111827;
+  outline: none;
 }
 
 #inspector {
@@ -42,9 +58,17 @@ input {
   width: 100%;
 }
 
-button { cursor: pointer; }
+button {
+  cursor: pointer;
+}
 
 pre {
   white-space: pre-wrap;
   font-size: 12px;
+}
+
+#selectionHeader {
+  font-size: 14px;
+  margin: 4px 0 8px;
+  color: #f8fafc;
 }

@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <optional>
+#include <sstream>
 
 namespace proteus::sandbox {
 
@@ -10,10 +13,19 @@ namespace {
 constexpr double kStepSize = 3.0;
 constexpr double kMinDistance = 1e-5;
 constexpr double kPi = 3.14159265358979323846;
+constexpr double kFrontArcRadians = kPi * 0.66;
 
 struct Vec2 {
     double x = 0.0;
     double y = 0.0;
+};
+
+struct InteractionCandidate {
+    bool is_agent = false;
+    int id = -1;
+    std::string label;
+    double distance = std::numeric_limits<double>::max();
+    double dot = -1.0;
 };
 
 double clamp01(double v) {
@@ -63,6 +75,59 @@ bool is_ally(const SandboxAgent& lhs, const SandboxAgent& rhs) {
     return (lhs.agent_id % 2) == (rhs.agent_id % 2);
 }
 
+std::optional<InteractionCandidate> pick_interaction_target(const SandboxAgent& player,
+    const std::vector<SandboxAgent>& agents,
+    const std::vector<SandboxObject>& objects) {
+    const double front_arc_cos = std::cos(kFrontArcRadians * 0.5);
+    const Vec2 forward{std::cos(player.facing_radians), std::sin(player.facing_radians)};
+
+    std::optional<InteractionCandidate> best;
+
+    auto consider = [&](bool is_agent, int id, const std::string& label, double x, double y) {
+        const auto [dir, dist] = direction_and_distance(player.x, player.y, x, y);
+        if (dist > player.interaction_radius) {
+            return;
+        }
+        const double dot = dir.x * forward.x + dir.y * forward.y;
+        if (dot < front_arc_cos) {
+            return;
+        }
+
+        InteractionCandidate candidate{is_agent, id, label, dist, dot};
+        if (!best.has_value()) {
+            best = candidate;
+            return;
+        }
+
+        if (candidate.distance + 1e-8 < best->distance) {
+            best = candidate;
+            return;
+        }
+        if (std::abs(candidate.distance - best->distance) <= 1e-8) {
+            if (candidate.id < best->id) {
+                best = candidate;
+                return;
+            }
+            if (candidate.id == best->id && candidate.is_agent && !best->is_agent) {
+                best = candidate;
+            }
+        }
+    };
+
+    for (const auto& other : agents) {
+        if (other.agent_id == player.agent_id) {
+            continue;
+        }
+        consider(true, other.agent_id, other.label, other.x, other.y);
+    }
+
+    for (const auto& object : objects) {
+        consider(false, object.object_id, object.label, object.x, object.y);
+    }
+
+    return best;
+}
+
 }  // namespace
 
 SandboxWorld::SandboxWorld() {
@@ -80,19 +145,20 @@ void SandboxWorld::seed_world() {
     obstacles_.clear();
 
     agents_ = {
-        SandboxAgent{1, "agent_red", 110.0, 90.0, 0.0, 12.0, "#ef4444", false, "idle", "seeded", -1, -1,
+        SandboxAgent{1, "agent_red", 110.0, 90.0, 0.0, 12.0, "#ef4444", false, true, 4.0, 55.0, "idle", "seeded player",
+            "", "", -1, -1,
             AgentSemanticState{0.85, 0.6, 0.4, 0.7, 0.25, 0.8},
             AgentBehaviorWeights{1.2, 0.9, 1.0, 0.5, 0.15}},
-        SandboxAgent{2, "agent_blue", 250.0, 85.0, 0.2, 12.0, "#3b82f6", false, "idle", "seeded", -1, -1,
+        SandboxAgent{2, "agent_blue", 250.0, 85.0, 0.2, 12.0, "#3b82f6", false, false, 3.0, 52.0, "idle", "seeded", "", "", -1, -1,
             AgentSemanticState{0.65, 0.5, 0.6, 0.55, 0.45, 0.55},
             AgentBehaviorWeights{1.0, 1.0, 0.9, 0.7, 0.2}},
-        SandboxAgent{3, "agent_green", 420.0, 120.0, 0.6, 12.0, "#22c55e", false, "idle", "seeded", -1, -1,
+        SandboxAgent{3, "agent_green", 420.0, 120.0, 0.6, 12.0, "#22c55e", false, false, 3.0, 52.0, "idle", "seeded", "", "", -1, -1,
             AgentSemanticState{0.6, 0.45, 0.55, 0.4, 0.6, 0.35},
             AgentBehaviorWeights{0.8, 1.2, 0.7, 1.1, 0.22}},
-        SandboxAgent{4, "agent_yellow", 150.0, 300.0, 1.0, 12.0, "#facc15", false, "idle", "seeded", -1, -1,
+        SandboxAgent{4, "agent_yellow", 150.0, 300.0, 1.0, 12.0, "#facc15", false, false, 3.0, 52.0, "idle", "seeded", "", "", -1, -1,
             AgentSemanticState{0.5, 0.65, 0.35, 0.8, 0.2, 0.9},
             AgentBehaviorWeights{1.1, 0.8, 1.2, 0.5, 0.12}},
-        SandboxAgent{5, "agent_purple", 360.0, 280.0, 2.0, 12.0, "#a855f7", false, "idle", "seeded", -1, -1,
+        SandboxAgent{5, "agent_purple", 360.0, 280.0, 2.0, 12.0, "#a855f7", false, false, 3.0, 52.0, "idle", "seeded", "", "", -1, -1,
             AgentSemanticState{0.55, 0.5, 0.7, 0.45, 0.55, 0.45},
             AgentBehaviorWeights{0.9, 1.1, 0.8, 1.0, 0.25}},
     };
@@ -180,6 +246,10 @@ void SandboxWorld::clamp_to_bounds_and_obstacles(SandboxAgent& agent, double pre
 }
 
 void SandboxWorld::step_once() {
+    step_once_with_input(std::nullopt);
+}
+
+void SandboxWorld::step_once_with_input(const std::optional<SandboxPlayerInput>& player_input) {
     std::sort(objects_.begin(), objects_.end(), [](const SandboxObject& a, const SandboxObject& b) { return a.object_id < b.object_id; });
     std::sort(agents_.begin(), agents_.end(), [](const SandboxAgent& a, const SandboxAgent& b) { return a.agent_id < b.agent_id; });
     std::vector<SandboxAgent> next = agents_;
@@ -197,6 +267,65 @@ void SandboxWorld::step_once() {
         double max_agent_repel = 0.0;
         int best_agent_attract = -1;
         int best_agent_repel = -1;
+        double idle_mag = 0.0;
+
+        const bool apply_player_input = updated.is_player_controlled;
+        if (apply_player_input) {
+            double move_x = 0.0;
+            double move_y = 0.0;
+            bool interact = false;
+            if (player_input.has_value()) {
+                move_x = std::max(-1.0, std::min(1.0, player_input->move_x));
+                move_y = std::max(-1.0, std::min(1.0, player_input->move_y));
+                interact = player_input->interact;
+            }
+
+            Vec2 move{move_x, move_y};
+            const double move_len = length(move);
+            if (move_len > kMinDistance) {
+                const Vec2 dir = scale(move, 1.0 / move_len);
+                net = scale(dir, std::max(0.0, updated.move_speed));
+                updated.facing_radians = std::atan2(dir.y, dir.x);
+                updated.last_action = "player_move";
+                std::ostringstream out;
+                out << "player input move_x=" << move_x << " move_y=" << move_y;
+                updated.influence_summary = out.str();
+            } else {
+                updated.last_action = "player_idle";
+                updated.influence_summary = "player-controlled agent idle (no movement input)";
+            }
+
+            updated.target_object_id = -1;
+            updated.target_agent_id = -1;
+
+            const double prev_x = updated.x;
+            const double prev_y = updated.y;
+            updated.x += net.x;
+            updated.y += net.y;
+            clamp_to_bounds_and_obstacles(updated, prev_x, prev_y);
+
+            if (interact) {
+                const auto target = pick_interaction_target(updated, agents_, objects_);
+                if (target.has_value()) {
+                    updated.last_interaction = "inspect " + target->label;
+                    std::ostringstream reason;
+                    reason << "success: nearest target in front arc id=" << target->id
+                           << " distance=" << target->distance;
+                    updated.last_interaction_result = reason.str();
+                    if (target->is_agent) {
+                        updated.target_agent_id = target->id;
+                        updated.target_object_id = -1;
+                    } else {
+                        updated.target_object_id = target->id;
+                        updated.target_agent_id = -1;
+                    }
+                } else {
+                    updated.last_interaction = "interact";
+                    updated.last_interaction_result = "no valid target in front arc and interaction radius";
+                }
+            }
+            continue;
+        }
 
         for (const auto& object : objects_) {
             const auto [dir, dist] = direction_and_distance(agent.x, agent.y, object.x, object.y);
@@ -250,7 +379,7 @@ void SandboxWorld::step_once() {
             std::cos(0.31 * idle_phase + 0.2 * agent.agent_id),
             std::sin(0.23 * idle_phase + 0.15 * agent.agent_id)
         };
-        const double idle_mag = updated.behavior.idle_wander_weight * (0.2 + (1.0 - updated.semantic.temperament));
+        idle_mag = updated.behavior.idle_wander_weight * (0.2 + (1.0 - updated.semantic.temperament));
         net = add(net, scale(idle, idle_mag));
 
         const double move_mag = length(net);
@@ -304,6 +433,13 @@ void SandboxWorld::step_n(int steps) {
     }
 }
 
+void SandboxWorld::step_n_with_input(int steps, const std::optional<SandboxPlayerInput>& player_input) {
+    const int bounded = std::max(0, std::min(steps, 500));
+    for (int i = 0; i < bounded; ++i) {
+        step_once_with_input(player_input);
+    }
+}
+
 nlohmann::json SandboxWorld::to_json() const {
     nlohmann::json agents_json = nlohmann::json::array({});
     for (const auto& agent : agents_) {
@@ -316,10 +452,15 @@ nlohmann::json SandboxWorld::to_json() const {
             {"radius", agent.radius},
             {"color_hex", agent.color_hex},
             {"selected", agent.selected},
+            {"is_player_controlled", agent.is_player_controlled},
+            {"move_speed", agent.move_speed},
+            {"interaction_radius", agent.interaction_radius},
             {"last_action", agent.last_action},
             {"target_object_id", agent.target_object_id},
             {"target_agent_id", agent.target_agent_id},
             {"influence_summary", agent.influence_summary},
+            {"last_interaction", agent.last_interaction},
+            {"last_interaction_result", agent.last_interaction_result},
             {"semantic", semantic_to_json(agent.semantic)},
             {"behavior", behavior_to_json(agent.behavior)},
         });
