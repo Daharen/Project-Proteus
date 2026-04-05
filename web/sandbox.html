@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Proteus Sandbox</title>
+  <link rel="stylesheet" href="/sandbox.css" />
+</head>
+<body>
+  <header>
+    <h1>Proteus Deterministic Sandbox</h1>
+    <a href="/">Back to Funnel</a>
+  </header>
+
+  <section class="controls">
+    <button id="resetBtn">Reset</button>
+    <button id="stepBtn">Step</button>
+    <button id="step10Btn">Step x10</button>
+  </section>
+
+  <main>
+    <canvas id="worldCanvas" width="800" height="520"></canvas>
+    <aside id="inspector">
+      <h2>Inspector</h2>
+      <pre id="summary">No selection</pre>
+      <div id="editor"></div>
+    </aside>
+  </main>
+
+  <script src="/sandbox.js"></script>
+</body>
+</html>

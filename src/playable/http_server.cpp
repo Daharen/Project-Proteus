@@ -9,6 +9,7 @@
 #include "proteus/bootstrap/import_novel_query_artifact.hpp"
 #include "proteus/bootstrap/dimension_contract_registry.hpp"
 #include "proteus/bootstrap/bootstrap_category.hpp"
+#include "proteus/sandbox/sandbox_world.hpp"
 #include "core/funnel/bootstrap_prompt_composer.h"
 
 #include <nlohmann/json.hpp>
@@ -30,6 +31,8 @@
 #include <string>
 #include <thread>
 #include <atomic>
+#include <mutex>
+#include <memory>
 #include <vector>
 
 #ifdef _WIN32
@@ -369,6 +372,8 @@ nlohmann::json features_to_json(const std::vector<double>& v) {
 
 void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
     const std::filesystem::path static_dir(config.static_dir);
+    auto sandbox_world = std::make_shared<sandbox::SandboxWorld>();
+    auto sandbox_mutex = std::make_shared<std::mutex>();
 
     svr.Options(R"(.*)", [](const httplib::Request&, httplib::Response& res) {
         res.status = 200;
@@ -399,8 +404,152 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
         add_cors_headers(res);
     });
 
+    svr.Get("/sandbox.html", [static_dir](const httplib::Request&, httplib::Response& res) {
+        res.status = 200;
+        res.set_content(read_file_or_empty(static_dir / "sandbox.html"), "text/html; charset=utf-8");
+        add_cors_headers(res);
+    });
+
+    svr.Get("/sandbox.js", [static_dir](const httplib::Request&, httplib::Response& res) {
+        res.status = 200;
+        res.set_content(read_file_or_empty(static_dir / "sandbox.js"), "application/javascript");
+        add_cors_headers(res);
+    });
+
+    svr.Get("/sandbox.css", [static_dir](const httplib::Request&, httplib::Response& res) {
+        res.status = 200;
+        res.set_content(read_file_or_empty(static_dir / "sandbox.css"), "text/css");
+        add_cors_headers(res);
+    });
+
     svr.Get("/health", [](const httplib::Request&, httplib::Response& res) {
         send_json(res, 200, nlohmann::json{{"ok", true}, {"version", "phase_4_2"}, {"policy_version", kPlayableCorePolicyVersion}});
+    });
+
+    svr.Get("/api/sandbox/state", [sandbox_world, sandbox_mutex](const httplib::Request&, httplib::Response& res) {
+        std::lock_guard<std::mutex> lock(*sandbox_mutex);
+        send_json(res, 200, sandbox_world->to_json());
+    });
+
+    svr.Post("/api/sandbox/reset", [sandbox_world, sandbox_mutex](const httplib::Request&, httplib::Response& res) {
+        std::lock_guard<std::mutex> lock(*sandbox_mutex);
+        sandbox_world->reset();
+        send_json(res, 200, sandbox_world->to_json());
+    });
+
+    svr.Post("/api/sandbox/step", [sandbox_world, sandbox_mutex](const httplib::Request& req, httplib::Response& res) {
+        nlohmann::json body = nlohmann::json::parse("{}");
+        if (!req.body.empty()) {
+            try {
+                body = nlohmann::json::parse(req.body);
+            } catch (...) {
+                send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"Malformed JSON"})}});
+                return;
+            }
+        }
+
+        int steps = 1;
+        if (body.contains("steps")) {
+            if (!body.at("steps").is_number()) {
+                send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"steps must be integer"})}});
+                return;
+            }
+            steps = static_cast<int>(body.at("steps").get<double>());
+            if (steps < 1 || steps > 500) {
+                send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"steps must be in [1,500]"})}});
+                return;
+            }
+        }
+
+        std::lock_guard<std::mutex> lock(*sandbox_mutex);
+        sandbox_world->step_n(steps);
+        send_json(res, 200, sandbox_world->to_json());
+    });
+
+    svr.Post("/api/sandbox/agent/update", [sandbox_world, sandbox_mutex](const httplib::Request& req, httplib::Response& res) {
+        nlohmann::json body;
+        try {
+            body = nlohmann::json::parse(req.body);
+        } catch (...) {
+            send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"Malformed JSON"})}});
+            return;
+        }
+        if (!body.contains("agent_id") || !body.at("agent_id").is_number()) {
+            send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"agent_id must be integer"})}});
+            return;
+        }
+        if (!body.contains("semantic") && !body.contains("behavior")) {
+            send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"semantic or behavior is required"})}});
+            return;
+        }
+
+        std::lock_guard<std::mutex> lock(*sandbox_mutex);
+        auto* agent = sandbox_world->find_agent(static_cast<int>(body.at("agent_id").get<double>()));
+        if (agent == nullptr) {
+            send_json(res, 404, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"agent not found"})}});
+            return;
+        }
+
+        if (body.contains("semantic")) {
+            if (!body.at("semantic").is_object()) {
+                send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"semantic must be object"})}});
+                return;
+            }
+            const auto& semantic = body.at("semantic");
+            if (semantic.contains("motivation") && semantic.at("motivation").is_number()) agent->semantic.motivation = semantic.at("motivation").get<double>();
+            if (semantic.contains("affect") && semantic.at("affect").is_number()) agent->semantic.affect = semantic.at("affect").get<double>();
+            if (semantic.contains("temperament") && semantic.at("temperament").is_number()) agent->semantic.temperament = semantic.at("temperament").get<double>();
+            if (semantic.contains("trust") && semantic.at("trust").is_number()) agent->semantic.trust = semantic.at("trust").get<double>();
+            if (semantic.contains("fear") && semantic.at("fear").is_number()) agent->semantic.fear = semantic.at("fear").get<double>();
+            if (semantic.contains("loyalty") && semantic.at("loyalty").is_number()) agent->semantic.loyalty = semantic.at("loyalty").get<double>();
+            sandbox::SandboxWorld::clamp_semantic_state(agent->semantic);
+        }
+
+        if (body.contains("behavior")) {
+            if (!body.at("behavior").is_object()) {
+                send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"behavior must be object"})}});
+                return;
+            }
+            const auto& behavior = body.at("behavior");
+            if (behavior.contains("seek_interest_weight") && behavior.at("seek_interest_weight").is_number()) agent->behavior.seek_interest_weight = behavior.at("seek_interest_weight").get<double>();
+            if (behavior.contains("avoid_threat_weight") && behavior.at("avoid_threat_weight").is_number()) agent->behavior.avoid_threat_weight = behavior.at("avoid_threat_weight").get<double>();
+            if (behavior.contains("ally_pull_weight") && behavior.at("ally_pull_weight").is_number()) agent->behavior.ally_pull_weight = behavior.at("ally_pull_weight").get<double>();
+            if (behavior.contains("rival_repulsion_weight") && behavior.at("rival_repulsion_weight").is_number()) agent->behavior.rival_repulsion_weight = behavior.at("rival_repulsion_weight").get<double>();
+            if (behavior.contains("idle_wander_weight") && behavior.at("idle_wander_weight").is_number()) agent->behavior.idle_wander_weight = behavior.at("idle_wander_weight").get<double>();
+            sandbox::SandboxWorld::clamp_behavior_weights(agent->behavior);
+        }
+
+        send_json(res, 200, sandbox_world->to_json());
+    });
+
+    svr.Post("/api/sandbox/object/update", [sandbox_world, sandbox_mutex](const httplib::Request& req, httplib::Response& res) {
+        nlohmann::json body;
+        try {
+            body = nlohmann::json::parse(req.body);
+        } catch (...) {
+            send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"Malformed JSON"})}});
+            return;
+        }
+        if (!body.contains("object_id") || !body.at("object_id").is_number()) {
+            send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"object_id must be integer"})}});
+            return;
+        }
+
+        std::lock_guard<std::mutex> lock(*sandbox_mutex);
+        auto* object = sandbox_world->find_object(static_cast<int>(body.at("object_id").get<double>()));
+        if (object == nullptr) {
+            send_json(res, 404, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"object not found"})}});
+            return;
+        }
+
+        if (body.contains("interest_tag") && body.at("interest_tag").is_number()) object->interest_tag = std::max(0.0, std::min(1.0, body.at("interest_tag").get<double>()));
+        if (body.contains("threat_tag") && body.at("threat_tag").is_number()) object->threat_tag = std::max(0.0, std::min(1.0, body.at("threat_tag").get<double>()));
+        if (body.contains("social_tag") && body.at("social_tag").is_number()) object->social_tag = std::max(0.0, std::min(1.0, body.at("social_tag").get<double>()));
+        if (body.contains("resource_tag") && body.at("resource_tag").is_number()) object->resource_tag = std::max(0.0, std::min(1.0, body.at("resource_tag").get<double>()));
+        if (body.contains("interaction_radius") && body.at("interaction_radius").is_number()) object->interaction_radius = std::max(10.0, std::min(120.0, body.at("interaction_radius").get<double>()));
+        if (body.contains("radius") && body.at("radius").is_number()) object->radius = std::max(3.0, std::min(30.0, body.at("radius").get<double>()));
+
+        send_json(res, 200, sandbox_world->to_json());
     });
 
     svr.Post("/dev/reset", [config](const httplib::Request&, httplib::Response& res) {
@@ -1050,6 +1199,19 @@ int run_self_test(const HttpServerConfig& config) {
     auto health = client_request(port, "GET", "/health");
     if (health.status != 200 || !json_bool(health.json, "ok", false)) {
         throw std::runtime_error("self_test health failed");
+    }
+
+    auto sandbox_reset = client_request(port, "POST", "/api/sandbox/reset", nlohmann::json::parse("{}"));
+    if (sandbox_reset.status != 200 || !json_bool(sandbox_reset.json, "ok", false)) {
+        throw std::runtime_error("self_test sandbox reset failed");
+    }
+    const double tick_before = sandbox_reset.json.at("tick").get<double>();
+    auto sandbox_step = client_request(port, "POST", "/api/sandbox/step", nlohmann::json{{"steps", 1}});
+    if (sandbox_step.status != 200 || !json_bool(sandbox_step.json, "ok", false)) {
+        throw std::runtime_error("self_test sandbox step failed");
+    }
+    if (sandbox_step.json.at("tick").get<double>() <= tick_before) {
+        throw std::runtime_error("self_test sandbox tick did not advance");
     }
 
     (void)client_request(port, "POST", "/api/funnel/resolve_guess", nlohmann::json{
