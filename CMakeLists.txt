@@ -31,6 +31,7 @@ add_library(proteus_core
     src/playable/proposal_selector.cpp
     src/playable/retrieval_engine.cpp
     src/playable/http_server.cpp
+    src/sandbox/sandbox_world.cpp
     src/query/query_identity.cpp
     src/query/domain_synonyms_seed.cpp
     src/llm/llm_cache_client.cpp
@@ -89,6 +90,7 @@ add_executable(proteus_tests
     tests/test_openai_responses_client.cpp
     tests/test_candidate_semantic_validator.cpp
     tests/test_bootstrap_prompt_composer.cpp
+    tests/test_sandbox_world.cpp
     tests/responders/test_response_envelope.cpp
     tests/responders/test_response_validation.cpp
     tests/integration/test_responder_rerun_stability.cpp
