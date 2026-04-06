@@ -1,0 +1,27 @@
+{
+  "state_to_seek_action": {
+    "thirst": "seek_water",
+    "hunger": "seek_food",
+    "fatigue": "seek_shelter"
+  },
+  "seek_to_terminal_action": {
+    "seek_water": "drink",
+    "seek_food": "eat",
+    "seek_shelter": "sleep"
+  },
+  "action_to_resource_kind": {
+    "drink": "water",
+    "eat": "food",
+    "sleep": "shelter"
+  },
+  "need_to_state_variable": {
+    "hydration": "thirst",
+    "nutrition": "hunger",
+    "sleep": "fatigue"
+  },
+  "hazard_to_response_action": {
+    "dehydration": "drink",
+    "starvation": "eat",
+    "exposure": "seek_shelter"
+  }
+}

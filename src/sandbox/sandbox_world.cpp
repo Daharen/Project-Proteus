@@ -6,6 +6,7 @@
 #include <limits>
 #include <optional>
 #include <sstream>
+#include <vector>
 
 namespace proteus::sandbox {
 
@@ -104,6 +105,20 @@ nlohmann::json survival_to_json(const AgentSurvivalState& survival) {
         {"eat_hunger_reduction", survival.eat_hunger_reduction},
         {"sleep_fatigue_reduction", survival.sleep_fatigue_reduction},
         {"survival_summary", survival.survival_summary},
+    };
+}
+
+nlohmann::json survival_preview_to_json(const std::optional<SurvivalPreview>& preview) {
+    if (!preview.has_value()) {
+        return nlohmann::json{{"available", false}};
+    }
+    return nlohmann::json{
+        {"available", true},
+        {"highest_state_pressure", preview->highest_state_pressure},
+        {"highest_pressure_normalized", preview->highest_pressure_normalized},
+        {"recommended_seek_action", preview->recommended_seek_action},
+        {"recommended_terminal_action", preview->recommended_terminal_action},
+        {"recommended_resource_kind", preview->recommended_resource_kind},
     };
 }
 
@@ -607,6 +622,43 @@ void SandboxWorld::step_n_with_input(int steps, const std::optional<SandboxPlaye
     }
 }
 
+bool SandboxWorld::reload_survival_binding(const std::string& path, std::string* error_out) {
+    const auto loaded = load_survival_binding_from_file(path);
+    if (!loaded.ok) {
+        std::ostringstream err;
+        for (std::size_t i = 0; i < loaded.errors.size(); ++i) {
+            if (i > 0) {
+                err << "; ";
+            }
+            err << loaded.errors[i];
+        }
+        survival_binding_last_error_ = err.str();
+        if (error_out != nullptr) {
+            *error_out = survival_binding_last_error_;
+        }
+        return false;
+    }
+
+    survival_binding_ = loaded.binding;
+    survival_binding_loaded_ = true;
+    survival_binding_source_path_ = path;
+    survival_binding_last_error_.clear();
+    if (error_out != nullptr) {
+        error_out->clear();
+    }
+    return true;
+}
+
+nlohmann::json SandboxWorld::survival_binding_status_json() const {
+    return nlohmann::json{
+        {"loaded", survival_binding_loaded_},
+        {"source_path", survival_binding_source_path_},
+        {"last_error", survival_binding_last_error_},
+        {"tie_break_order", nlohmann::json::array({"thirst", "hunger", "fatigue"})},
+        {"mappings", survival_binding_.to_json()},
+    };
+}
+
 nlohmann::json SandboxWorld::to_json() const {
     nlohmann::json agents_json = nlohmann::json::array({});
     for (const auto& agent : agents_) {
@@ -631,6 +683,7 @@ nlohmann::json SandboxWorld::to_json() const {
             {"semantic", semantic_to_json(agent.semantic)},
             {"behavior", behavior_to_json(agent.behavior)},
             {"survival", survival_to_json(agent.survival)},
+            {"semantic_preview", survival_preview_to_json(compute_survival_preview(agent.survival, survival_binding_))},
         });
     }
 
@@ -677,6 +730,7 @@ nlohmann::json SandboxWorld::to_json() const {
         {"agents", agents_json},
         {"objects", objects_json},
         {"obstacles", obstacles_json},
+        {"survival_binding", survival_binding_status_json()},
     };
 }
 

@@ -2,6 +2,7 @@
 
 #include "proteus/sandbox/sandbox_input.hpp"
 #include "proteus/sandbox/sandbox_types.hpp"
+#include "proteus/sandbox/survival_binding.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -40,6 +41,9 @@ public:
     nlohmann::json to_json() const;
     std::string deterministic_snapshot() const;
 
+    bool reload_survival_binding(const std::string& path, std::string* error_out = nullptr);
+    nlohmann::json survival_binding_status_json() const;
+
 private:
     void seed_world();
     void update_survival_summaries();
@@ -54,6 +58,11 @@ private:
     std::vector<SandboxAgent> agents_;
     std::vector<SandboxObject> objects_;
     std::vector<SandboxObstacle> obstacles_;
+
+    SurvivalBinding survival_binding_;
+    bool survival_binding_loaded_ = false;
+    std::string survival_binding_source_path_;
+    std::string survival_binding_last_error_;
 };
 
 }  // namespace proteus::sandbox
