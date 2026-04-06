@@ -21,6 +21,30 @@ struct AgentBehaviorWeights {
     double idle_wander_weight = 0.2;
 };
 
+struct AgentSurvivalState {
+    double need_survival_weight = 1.0;
+    double need_hydration_weight = 1.0;
+    double need_nutrition_weight = 1.0;
+    double need_rest_weight = 1.0;
+
+    double state_thirst_current = 0.0;
+    double state_thirst_max = 100.0;
+    double state_hunger_current = 0.0;
+    double state_hunger_max = 100.0;
+    double state_fatigue_current = 0.0;
+    double state_fatigue_max = 100.0;
+
+    double thirst_increase_per_tick = 0.0;
+    double hunger_increase_per_tick = 0.0;
+    double fatigue_increase_per_tick = 0.0;
+
+    double drink_thirst_reduction = 20.0;
+    double eat_hunger_reduction = 20.0;
+    double sleep_fatigue_reduction = 20.0;
+
+    std::string survival_summary;
+};
+
 struct SandboxAgent {
     int agent_id = 0;
     std::string label;
@@ -41,6 +65,7 @@ struct SandboxAgent {
     int target_agent_id = -1;
     AgentSemanticState semantic;
     AgentBehaviorWeights behavior;
+    AgentSurvivalState survival;
 };
 
 struct SandboxObject {
@@ -56,6 +81,14 @@ struct SandboxObject {
     double threat_tag = 0.0;
     double social_tag = 0.0;
     double resource_tag = 0.0;
+
+    std::string object_kind;
+    std::string resource_kind;
+    double available_units = 0.0;
+    double max_units = 0.0;
+    double regen_per_tick = 0.0;
+    std::string interaction_action;
+    double consumption_per_interaction = 0.0;
 };
 
 struct SandboxObstacle {

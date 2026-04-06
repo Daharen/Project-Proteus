@@ -516,8 +516,8 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
             send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"agent_id must be integer"})}});
             return;
         }
-        if (!body.contains("semantic") && !body.contains("behavior")) {
-            send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"semantic or behavior is required"})}});
+        if (!body.contains("semantic") && !body.contains("behavior") && !body.contains("survival")) {
+            send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"semantic, behavior, or survival is required"})}});
             return;
         }
 
@@ -557,6 +557,31 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
             sandbox::SandboxWorld::clamp_behavior_weights(agent->behavior);
         }
 
+        if (body.contains("survival")) {
+            if (!body.at("survival").is_object()) {
+                send_json(res, 400, nlohmann::json{{"ok", false}, {"errors", nlohmann::json::array({"survival must be object"})}});
+                return;
+            }
+            const auto& survival = body.at("survival");
+            if (survival.contains("need_survival_weight") && survival.at("need_survival_weight").is_number()) agent->survival.need_survival_weight = survival.at("need_survival_weight").get<double>();
+            if (survival.contains("need_hydration_weight") && survival.at("need_hydration_weight").is_number()) agent->survival.need_hydration_weight = survival.at("need_hydration_weight").get<double>();
+            if (survival.contains("need_nutrition_weight") && survival.at("need_nutrition_weight").is_number()) agent->survival.need_nutrition_weight = survival.at("need_nutrition_weight").get<double>();
+            if (survival.contains("need_rest_weight") && survival.at("need_rest_weight").is_number()) agent->survival.need_rest_weight = survival.at("need_rest_weight").get<double>();
+            if (survival.contains("state_thirst_current") && survival.at("state_thirst_current").is_number()) agent->survival.state_thirst_current = survival.at("state_thirst_current").get<double>();
+            if (survival.contains("state_thirst_max") && survival.at("state_thirst_max").is_number()) agent->survival.state_thirst_max = survival.at("state_thirst_max").get<double>();
+            if (survival.contains("state_hunger_current") && survival.at("state_hunger_current").is_number()) agent->survival.state_hunger_current = survival.at("state_hunger_current").get<double>();
+            if (survival.contains("state_hunger_max") && survival.at("state_hunger_max").is_number()) agent->survival.state_hunger_max = survival.at("state_hunger_max").get<double>();
+            if (survival.contains("state_fatigue_current") && survival.at("state_fatigue_current").is_number()) agent->survival.state_fatigue_current = survival.at("state_fatigue_current").get<double>();
+            if (survival.contains("state_fatigue_max") && survival.at("state_fatigue_max").is_number()) agent->survival.state_fatigue_max = survival.at("state_fatigue_max").get<double>();
+            if (survival.contains("thirst_increase_per_tick") && survival.at("thirst_increase_per_tick").is_number()) agent->survival.thirst_increase_per_tick = survival.at("thirst_increase_per_tick").get<double>();
+            if (survival.contains("hunger_increase_per_tick") && survival.at("hunger_increase_per_tick").is_number()) agent->survival.hunger_increase_per_tick = survival.at("hunger_increase_per_tick").get<double>();
+            if (survival.contains("fatigue_increase_per_tick") && survival.at("fatigue_increase_per_tick").is_number()) agent->survival.fatigue_increase_per_tick = survival.at("fatigue_increase_per_tick").get<double>();
+            if (survival.contains("drink_thirst_reduction") && survival.at("drink_thirst_reduction").is_number()) agent->survival.drink_thirst_reduction = survival.at("drink_thirst_reduction").get<double>();
+            if (survival.contains("eat_hunger_reduction") && survival.at("eat_hunger_reduction").is_number()) agent->survival.eat_hunger_reduction = survival.at("eat_hunger_reduction").get<double>();
+            if (survival.contains("sleep_fatigue_reduction") && survival.at("sleep_fatigue_reduction").is_number()) agent->survival.sleep_fatigue_reduction = survival.at("sleep_fatigue_reduction").get<double>();
+            sandbox::SandboxWorld::clamp_survival_state(agent->survival);
+        }
+
         send_json(res, 200, sandbox_world->to_json());
     });
 
@@ -580,12 +605,23 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
             return;
         }
 
+        if (body.contains("kind") && body.at("kind").is_string()) object->kind = body.at("kind").get<std::string>();
         if (body.contains("interest_tag") && body.at("interest_tag").is_number()) object->interest_tag = std::max(0.0, std::min(1.0, body.at("interest_tag").get<double>()));
         if (body.contains("threat_tag") && body.at("threat_tag").is_number()) object->threat_tag = std::max(0.0, std::min(1.0, body.at("threat_tag").get<double>()));
         if (body.contains("social_tag") && body.at("social_tag").is_number()) object->social_tag = std::max(0.0, std::min(1.0, body.at("social_tag").get<double>()));
         if (body.contains("resource_tag") && body.at("resource_tag").is_number()) object->resource_tag = std::max(0.0, std::min(1.0, body.at("resource_tag").get<double>()));
         if (body.contains("interaction_radius") && body.at("interaction_radius").is_number()) object->interaction_radius = std::max(10.0, std::min(120.0, body.at("interaction_radius").get<double>()));
         if (body.contains("radius") && body.at("radius").is_number()) object->radius = std::max(3.0, std::min(30.0, body.at("radius").get<double>()));
+        if (body.contains("object_kind") && body.at("object_kind").is_string()) object->object_kind = body.at("object_kind").get<std::string>();
+        if (body.contains("resource_kind") && body.at("resource_kind").is_string()) object->resource_kind = body.at("resource_kind").get<std::string>();
+        if (body.contains("available_units") && body.at("available_units").is_number()) object->available_units = body.at("available_units").get<double>();
+        if (body.contains("max_units") && body.at("max_units").is_number()) object->max_units = body.at("max_units").get<double>();
+        if (body.contains("regen_per_tick") && body.at("regen_per_tick").is_number()) object->regen_per_tick = body.at("regen_per_tick").get<double>();
+        if (body.contains("interaction_action") && body.at("interaction_action").is_string()) object->interaction_action = body.at("interaction_action").get<std::string>();
+        if (body.contains("consumption_per_interaction") && body.at("consumption_per_interaction").is_number()) {
+            object->consumption_per_interaction = body.at("consumption_per_interaction").get<double>();
+        }
+        sandbox::SandboxWorld::clamp_object_resource_state(*object);
 
         send_json(res, 200, sandbox_world->to_json());
     });

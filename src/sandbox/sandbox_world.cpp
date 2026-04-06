@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iomanip>
 #include <limits>
 #include <optional>
 #include <sstream>
@@ -32,6 +33,10 @@ double clamp01(double v) {
     return std::max(0.0, std::min(1.0, v));
 }
 
+double clamp_non_negative(double v) {
+    return std::max(0.0, v);
+}
+
 Vec2 add(const Vec2& a, const Vec2& b) {
     return Vec2{a.x + b.x, a.y + b.y};
 }
@@ -48,6 +53,15 @@ std::pair<Vec2, double> direction_and_distance(double from_x, double from_y, dou
     const Vec2 d{to_x - from_x, to_y - from_y};
     const double dist = std::max(length(d), kMinDistance);
     return {Vec2{d.x / dist, d.y / dist}, dist};
+}
+
+std::string survival_summary_text(const AgentSurvivalState& survival) {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(1)
+        << "thirst=" << survival.state_thirst_current << "/" << survival.state_thirst_max
+        << " hunger=" << survival.state_hunger_current << "/" << survival.state_hunger_max
+        << " fatigue=" << survival.state_fatigue_current << "/" << survival.state_fatigue_max;
+    return out.str();
 }
 
 nlohmann::json semantic_to_json(const AgentSemanticState& semantic) {
@@ -68,6 +82,28 @@ nlohmann::json behavior_to_json(const AgentBehaviorWeights& behavior) {
         {"ally_pull_weight", behavior.ally_pull_weight},
         {"rival_repulsion_weight", behavior.rival_repulsion_weight},
         {"idle_wander_weight", behavior.idle_wander_weight},
+    };
+}
+
+nlohmann::json survival_to_json(const AgentSurvivalState& survival) {
+    return nlohmann::json{
+        {"need_survival_weight", survival.need_survival_weight},
+        {"need_hydration_weight", survival.need_hydration_weight},
+        {"need_nutrition_weight", survival.need_nutrition_weight},
+        {"need_rest_weight", survival.need_rest_weight},
+        {"state_thirst_current", survival.state_thirst_current},
+        {"state_thirst_max", survival.state_thirst_max},
+        {"state_hunger_current", survival.state_hunger_current},
+        {"state_hunger_max", survival.state_hunger_max},
+        {"state_fatigue_current", survival.state_fatigue_current},
+        {"state_fatigue_max", survival.state_fatigue_max},
+        {"thirst_increase_per_tick", survival.thirst_increase_per_tick},
+        {"hunger_increase_per_tick", survival.hunger_increase_per_tick},
+        {"fatigue_increase_per_tick", survival.fatigue_increase_per_tick},
+        {"drink_thirst_reduction", survival.drink_thirst_reduction},
+        {"eat_hunger_reduction", survival.eat_hunger_reduction},
+        {"sleep_fatigue_reduction", survival.sleep_fatigue_reduction},
+        {"survival_summary", survival.survival_summary},
     };
 }
 
@@ -137,6 +173,7 @@ SandboxWorld::SandboxWorld() {
 void SandboxWorld::reset() {
     tick_counter_ = 0;
     seed_world();
+    update_survival_summaries();
 }
 
 void SandboxWorld::seed_world() {
@@ -148,31 +185,54 @@ void SandboxWorld::seed_world() {
         SandboxAgent{1, "agent_red", 110.0, 90.0, 0.0, 12.0, "#ef4444", false, true, 4.0, 55.0, "idle", "seeded player",
             "", "", -1, -1,
             AgentSemanticState{0.85, 0.6, 0.4, 0.7, 0.25, 0.8},
-            AgentBehaviorWeights{1.2, 0.9, 1.0, 0.5, 0.15}},
+            AgentBehaviorWeights{1.2, 0.9, 1.0, 0.5, 0.15},
+            AgentSurvivalState{1.0, 1.25, 0.9, 0.8, 62.0, 100.0, 55.0, 100.0, 70.0, 100.0, 1.0, 0.7, 0.5, 25.0, 20.0, 30.0, ""}},
         SandboxAgent{2, "agent_blue", 250.0, 85.0, 0.2, 12.0, "#3b82f6", false, false, 3.0, 52.0, "idle", "seeded", "", "", -1, -1,
             AgentSemanticState{0.65, 0.5, 0.6, 0.55, 0.45, 0.55},
-            AgentBehaviorWeights{1.0, 1.0, 0.9, 0.7, 0.2}},
+            AgentBehaviorWeights{1.0, 1.0, 0.9, 0.7, 0.2},
+            AgentSurvivalState{0.9, 0.8, 1.1, 0.7, 20.0, 100.0, 80.0, 100.0, 35.0, 100.0, 0.8, 1.2, 0.4, 18.0, 24.0, 22.0, ""}},
         SandboxAgent{3, "agent_green", 420.0, 120.0, 0.6, 12.0, "#22c55e", false, false, 3.0, 52.0, "idle", "seeded", "", "", -1, -1,
             AgentSemanticState{0.6, 0.45, 0.55, 0.4, 0.6, 0.35},
-            AgentBehaviorWeights{0.8, 1.2, 0.7, 1.1, 0.22}},
+            AgentBehaviorWeights{0.8, 1.2, 0.7, 1.1, 0.22},
+            AgentSurvivalState{1.1, 1.0, 1.0, 1.2, 48.0, 100.0, 40.0, 100.0, 88.0, 100.0, 0.6, 0.6, 0.9, 14.0, 15.0, 35.0, ""}},
         SandboxAgent{4, "agent_yellow", 150.0, 300.0, 1.0, 12.0, "#facc15", false, false, 3.0, 52.0, "idle", "seeded", "", "", -1, -1,
             AgentSemanticState{0.5, 0.65, 0.35, 0.8, 0.2, 0.9},
-            AgentBehaviorWeights{1.1, 0.8, 1.2, 0.5, 0.12}},
+            AgentBehaviorWeights{1.1, 0.8, 1.2, 0.5, 0.12},
+            AgentSurvivalState{0.8, 0.7, 0.9, 1.0, 30.0, 100.0, 22.0, 100.0, 45.0, 100.0, 0.7, 0.5, 0.7, 16.0, 18.0, 28.0, ""}},
         SandboxAgent{5, "agent_purple", 360.0, 280.0, 2.0, 12.0, "#a855f7", false, false, 3.0, 52.0, "idle", "seeded", "", "", -1, -1,
             AgentSemanticState{0.55, 0.5, 0.7, 0.45, 0.55, 0.45},
-            AgentBehaviorWeights{0.9, 1.1, 0.8, 1.0, 0.25}},
+            AgentBehaviorWeights{0.9, 1.1, 0.8, 1.0, 0.25},
+            AgentSurvivalState{1.0, 1.0, 1.0, 1.0, 75.0, 100.0, 64.0, 100.0, 20.0, 100.0, 1.4, 0.8, 0.2, 30.0, 26.0, 18.0, ""}},
     };
 
+    for (auto& agent : agents_) {
+        clamp_semantic_state(agent.semantic);
+        clamp_behavior_weights(agent.behavior);
+        clamp_survival_state(agent.survival);
+    }
+
     objects_ = {
-        SandboxObject{101, "resource_node_a", "resource", 90.0, 210.0, 10.0, 48.0, "#34d399", 0.85, 0.0, 0.2, 0.9},
-        SandboxObject{102, "danger_node_a", "danger", 305.0, 195.0, 11.0, 55.0, "#dc2626", 0.0, 0.9, 0.0, 0.0},
-        SandboxObject{103, "neutral_waypoint_a", "waypoint", 520.0, 90.0, 9.0, 38.0, "#94a3b8", 0.35, 0.0, 0.1, 0.1},
-        SandboxObject{104, "ally_beacon_a", "ally_beacon", 520.0, 300.0, 12.0, 52.0, "#2563eb", 0.25, 0.0, 0.95, 0.0},
-        SandboxObject{105, "rival_beacon_a", "rival_beacon", 240.0, 335.0, 12.0, 52.0, "#7c3aed", 0.1, 0.5, 0.65, 0.0},
-        SandboxObject{106, "rest_point_a", "rest", 72.0, 360.0, 10.0, 40.0, "#fde68a", 0.3, 0.0, 0.2, 0.6},
-        SandboxObject{107, "resource_node_b", "resource", 600.0, 220.0, 10.0, 48.0, "#10b981", 0.8, 0.0, 0.1, 0.95},
-        SandboxObject{108, "danger_node_b", "danger", 430.0, 340.0, 11.0, 55.0, "#b91c1c", 0.0, 0.85, 0.0, 0.0},
+        SandboxObject{101, "water_source_a", "resource", 90.0, 210.0, 10.0, 48.0, "#38bdf8", 0.85, 0.0, 0.2, 0.9,
+            "water_source", "water", 10.0, 10.0, 0.25, "drink", 1.0},
+        SandboxObject{102, "danger_node_a", "danger", 305.0, 195.0, 11.0, 55.0, "#dc2626", 0.0, 0.9, 0.0, 0.0,
+            "hazard", "", 0.0, 0.0, 0.0, "inspect", 0.0},
+        SandboxObject{103, "food_source_a", "resource", 520.0, 90.0, 9.0, 38.0, "#f59e0b", 0.35, 0.0, 0.1, 0.1,
+            "food_source", "food", 8.0, 8.0, 0.2, "eat", 1.0},
+        SandboxObject{104, "ally_beacon_a", "ally_beacon", 520.0, 300.0, 12.0, 52.0, "#2563eb", 0.25, 0.0, 0.95, 0.0,
+            "beacon", "", 0.0, 0.0, 0.0, "inspect", 0.0},
+        SandboxObject{105, "rival_beacon_a", "rival_beacon", 240.0, 335.0, 12.0, 52.0, "#7c3aed", 0.1, 0.5, 0.65, 0.0,
+            "beacon", "", 0.0, 0.0, 0.0, "inspect", 0.0},
+        SandboxObject{106, "shelter_a", "rest", 72.0, 360.0, 10.0, 40.0, "#fde68a", 0.3, 0.0, 0.2, 0.6,
+            "shelter", "rest", 1.0, 1.0, 0.0, "sleep", 0.0},
+        SandboxObject{107, "resource_node_b", "resource", 600.0, 220.0, 10.0, 48.0, "#10b981", 0.8, 0.0, 0.1, 0.95,
+            "resource", "", 0.0, 0.0, 0.0, "inspect", 0.0},
+        SandboxObject{108, "danger_node_b", "danger", 430.0, 340.0, 11.0, 55.0, "#b91c1c", 0.0, 0.85, 0.0, 0.0,
+            "hazard", "", 0.0, 0.0, 0.0, "inspect", 0.0},
     };
+
+    for (auto& object : objects_) {
+        clamp_object_resource_state(object);
+    }
 
     obstacles_ = {
         SandboxObstacle{201, 285.0, 75.0, 70.0, 95.0},
@@ -195,6 +255,41 @@ void SandboxWorld::clamp_behavior_weights(AgentBehaviorWeights& behavior) {
     behavior.ally_pull_weight = std::max(0.0, std::min(3.0, behavior.ally_pull_weight));
     behavior.rival_repulsion_weight = std::max(0.0, std::min(3.0, behavior.rival_repulsion_weight));
     behavior.idle_wander_weight = std::max(0.0, std::min(1.5, behavior.idle_wander_weight));
+}
+
+void SandboxWorld::clamp_survival_state(AgentSurvivalState& survival) {
+    survival.need_survival_weight = std::max(0.0, std::min(3.0, survival.need_survival_weight));
+    survival.need_hydration_weight = std::max(0.0, std::min(3.0, survival.need_hydration_weight));
+    survival.need_nutrition_weight = std::max(0.0, std::min(3.0, survival.need_nutrition_weight));
+    survival.need_rest_weight = std::max(0.0, std::min(3.0, survival.need_rest_weight));
+
+    survival.state_thirst_max = std::max(1.0, survival.state_thirst_max);
+    survival.state_hunger_max = std::max(1.0, survival.state_hunger_max);
+    survival.state_fatigue_max = std::max(1.0, survival.state_fatigue_max);
+
+    survival.state_thirst_current = std::max(0.0, std::min(survival.state_thirst_max, survival.state_thirst_current));
+    survival.state_hunger_current = std::max(0.0, std::min(survival.state_hunger_max, survival.state_hunger_current));
+    survival.state_fatigue_current = std::max(0.0, std::min(survival.state_fatigue_max, survival.state_fatigue_current));
+
+    survival.thirst_increase_per_tick = std::max(0.0, std::min(10.0, survival.thirst_increase_per_tick));
+    survival.hunger_increase_per_tick = std::max(0.0, std::min(10.0, survival.hunger_increase_per_tick));
+    survival.fatigue_increase_per_tick = std::max(0.0, std::min(10.0, survival.fatigue_increase_per_tick));
+
+    survival.drink_thirst_reduction = std::max(0.0, std::min(100.0, survival.drink_thirst_reduction));
+    survival.eat_hunger_reduction = std::max(0.0, std::min(100.0, survival.eat_hunger_reduction));
+    survival.sleep_fatigue_reduction = std::max(0.0, std::min(100.0, survival.sleep_fatigue_reduction));
+}
+
+void SandboxWorld::clamp_object_resource_state(SandboxObject& object) {
+    object.available_units = clamp_non_negative(object.available_units);
+    object.max_units = clamp_non_negative(object.max_units);
+    object.regen_per_tick = std::max(0.0, std::min(10.0, object.regen_per_tick));
+    object.consumption_per_interaction = std::max(0.0, std::min(10.0, object.consumption_per_interaction));
+
+    if (object.max_units < object.available_units) {
+        object.max_units = object.available_units;
+    }
+    object.available_units = std::min(object.max_units, object.available_units);
 }
 
 SandboxAgent* SandboxWorld::find_agent(int agent_id) {
@@ -247,6 +342,93 @@ void SandboxWorld::clamp_to_bounds_and_obstacles(SandboxAgent& agent, double pre
 
 void SandboxWorld::step_once() {
     step_once_with_input(std::nullopt);
+}
+
+void SandboxWorld::apply_player_interaction(SandboxAgent& updated, const std::vector<SandboxAgent>& current_agents) {
+    const auto target = pick_interaction_target(updated, current_agents, objects_);
+    if (!target.has_value()) {
+        updated.last_interaction = "interact";
+        updated.last_interaction_result = "no valid consumable target in front arc";
+        return;
+    }
+
+    if (target->is_agent) {
+        updated.last_interaction = "inspect " + target->label;
+        updated.last_interaction_result = "no valid consumable target in front arc";
+        updated.target_agent_id = target->id;
+        updated.target_object_id = -1;
+        return;
+    }
+
+    auto* object = find_object(target->id);
+    if (object == nullptr) {
+        updated.last_interaction = "interact";
+        updated.last_interaction_result = "no valid consumable target in front arc";
+        return;
+    }
+
+    updated.target_object_id = object->object_id;
+    updated.target_agent_id = -1;
+
+    std::ostringstream result;
+    result << std::fixed << std::setprecision(0);
+    if (object->interaction_action == "drink" && object->available_units >= object->consumption_per_interaction && object->consumption_per_interaction > 0.0) {
+        const double before_thirst = updated.survival.state_thirst_current;
+        const double before_units = object->available_units;
+        updated.survival.state_thirst_current = std::max(0.0, updated.survival.state_thirst_current - updated.survival.drink_thirst_reduction);
+        object->available_units = std::max(0.0, object->available_units - object->consumption_per_interaction);
+        result << "drink " << object->label << ": thirst " << before_thirst << " -> " << updated.survival.state_thirst_current
+               << ", units " << before_units << " -> " << object->available_units;
+        updated.last_interaction = "drink " + object->label;
+    } else if (object->interaction_action == "eat" && object->available_units >= object->consumption_per_interaction && object->consumption_per_interaction > 0.0) {
+        const double before_hunger = updated.survival.state_hunger_current;
+        const double before_units = object->available_units;
+        updated.survival.state_hunger_current = std::max(0.0, updated.survival.state_hunger_current - updated.survival.eat_hunger_reduction);
+        object->available_units = std::max(0.0, object->available_units - object->consumption_per_interaction);
+        result << "eat " << object->label << ": hunger " << before_hunger << " -> " << updated.survival.state_hunger_current
+               << ", units " << before_units << " -> " << object->available_units;
+        updated.last_interaction = "eat " + object->label;
+    } else if (object->interaction_action == "sleep") {
+        const double before_fatigue = updated.survival.state_fatigue_current;
+        updated.survival.state_fatigue_current = std::max(0.0, updated.survival.state_fatigue_current - updated.survival.sleep_fatigue_reduction);
+        result << "sleep at " << object->label << ": fatigue " << before_fatigue << " -> " << updated.survival.state_fatigue_current;
+        updated.last_interaction = "sleep at " + object->label;
+    } else {
+        updated.last_interaction = "interact";
+        updated.last_interaction_result = "no valid consumable target in front arc";
+        return;
+    }
+
+    clamp_survival_state(updated.survival);
+    clamp_object_resource_state(*object);
+    updated.last_interaction_result = result.str();
+}
+
+void SandboxWorld::advance_survival_tick() {
+    // Deterministic update order:
+    // 1) sort agents/objects by stable id,
+    // 2) advance all agent scalar survival state,
+    // 3) regenerate object resources.
+    for (auto& agent : agents_) {
+        agent.survival.state_thirst_current = std::min(agent.survival.state_thirst_max,
+            agent.survival.state_thirst_current + agent.survival.thirst_increase_per_tick);
+        agent.survival.state_hunger_current = std::min(agent.survival.state_hunger_max,
+            agent.survival.state_hunger_current + agent.survival.hunger_increase_per_tick);
+        agent.survival.state_fatigue_current = std::min(agent.survival.state_fatigue_max,
+            agent.survival.state_fatigue_current + agent.survival.fatigue_increase_per_tick);
+        clamp_survival_state(agent.survival);
+    }
+
+    for (auto& object : objects_) {
+        object.available_units = std::min(object.max_units, object.available_units + object.regen_per_tick);
+        clamp_object_resource_state(object);
+    }
+}
+
+void SandboxWorld::update_survival_summaries() {
+    for (auto& agent : agents_) {
+        agent.survival.survival_summary = survival_summary_text(agent.survival);
+    }
 }
 
 void SandboxWorld::step_once_with_input(const std::optional<SandboxPlayerInput>& player_input) {
@@ -305,24 +487,7 @@ void SandboxWorld::step_once_with_input(const std::optional<SandboxPlayerInput>&
             clamp_to_bounds_and_obstacles(updated, prev_x, prev_y);
 
             if (interact) {
-                const auto target = pick_interaction_target(updated, agents_, objects_);
-                if (target.has_value()) {
-                    updated.last_interaction = "inspect " + target->label;
-                    std::ostringstream reason;
-                    reason << "success: nearest target in front arc id=" << target->id
-                           << " distance=" << target->distance;
-                    updated.last_interaction_result = reason.str();
-                    if (target->is_agent) {
-                        updated.target_agent_id = target->id;
-                        updated.target_object_id = -1;
-                    } else {
-                        updated.target_object_id = target->id;
-                        updated.target_agent_id = -1;
-                    }
-                } else {
-                    updated.last_interaction = "interact";
-                    updated.last_interaction_result = "no valid target in front arc and interaction radius";
-                }
+                apply_player_interaction(updated, agents_);
             }
             continue;
         }
@@ -423,6 +588,8 @@ void SandboxWorld::step_once_with_input(const std::optional<SandboxPlayerInput>&
     }
 
     agents_ = std::move(next);
+    advance_survival_tick();
+    update_survival_summaries();
     ++tick_counter_;
 }
 
@@ -463,6 +630,7 @@ nlohmann::json SandboxWorld::to_json() const {
             {"last_interaction_result", agent.last_interaction_result},
             {"semantic", semantic_to_json(agent.semantic)},
             {"behavior", behavior_to_json(agent.behavior)},
+            {"survival", survival_to_json(agent.survival)},
         });
     }
 
@@ -481,6 +649,13 @@ nlohmann::json SandboxWorld::to_json() const {
             {"threat_tag", object.threat_tag},
             {"social_tag", object.social_tag},
             {"resource_tag", object.resource_tag},
+            {"object_kind", object.object_kind},
+            {"resource_kind", object.resource_kind},
+            {"available_units", object.available_units},
+            {"max_units", object.max_units},
+            {"regen_per_tick", object.regen_per_tick},
+            {"interaction_action", object.interaction_action},
+            {"consumption_per_interaction", object.consumption_per_interaction},
         });
     }
 
