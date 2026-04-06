@@ -7,6 +7,10 @@ const runStatus = document.getElementById('runStatus');
 const playerStatus = document.getElementById('playerStatus');
 const interactionStatus = document.getElementById('interactionStatus');
 const survivalStatus = document.getElementById('survivalStatus');
+const bindingStatus = document.getElementById('bindingStatus');
+const bindingPath = document.getElementById('bindingPath');
+const bindingPreview = document.getElementById('bindingPreview');
+const bindingMappings = document.getElementById('bindingMappings');
 
 const PLAY_INTERVAL_MS = 100;
 
@@ -101,6 +105,47 @@ function updateStatusRow() {
   survivalStatus.textContent = survivalText(player);
 }
 
+
+function selectedAgentPreview() {
+  if (!world || selection?.type !== 'agent') return null;
+  const agent = world.agents.find((a) => a.agent_id === selection.id);
+  return agent?.semantic_preview || null;
+}
+
+function renderSemanticBindingPanel() {
+  if (!world?.survival_binding) {
+    bindingStatus.textContent = 'Binding status: unavailable';
+    bindingPath.textContent = 'Source: n/a';
+    bindingPreview.textContent = 'No preview';
+    bindingMappings.textContent = 'No mappings loaded';
+    return;
+  }
+
+  const binding = world.survival_binding;
+  bindingStatus.textContent = `Binding status: ${binding.loaded ? 'loaded' : 'not loaded'}${binding.last_error ? ` (last error: ${binding.last_error})` : ''}`;
+  bindingPath.textContent = `Source: ${binding.source_path || 'n/a'}`;
+
+  const preview = selectedAgentPreview();
+  if (!preview?.available) {
+    bindingPreview.textContent = [
+      'Selected-agent semantic preview: unavailable',
+      'Select an agent to inspect dominant survival pressure mapping.',
+    ].join('\n');
+  } else {
+    bindingPreview.textContent = [
+      'Selected-agent semantic preview:',
+      `highest_state_pressure=${preview.highest_state_pressure}`,
+      `recommended_seek_action=${preview.recommended_seek_action || 'n/a'}`,
+      `recommended_terminal_action=${preview.recommended_terminal_action || 'n/a'}`,
+      `recommended_resource_kind=${preview.recommended_resource_kind || 'n/a'}`,
+      `highest_pressure_normalized=${Number(preview.highest_pressure_normalized).toFixed(3)}`,
+      `tie_break_order=${(binding.tie_break_order || []).join(' > ')}`,
+    ].join('\n');
+  }
+
+  bindingMappings.textContent = JSON.stringify(binding.mappings || {}, null, 2);
+}
+
 function render() {
   if (!world) return;
 
@@ -179,6 +224,7 @@ function render() {
   }
 
   updateStatusRow();
+  renderSemanticBindingPanel();
   renderInspector();
 }
 
@@ -427,6 +473,15 @@ document.getElementById('playBtn').onclick = () => {
 
 document.getElementById('pauseBtn').onclick = () => {
   stopRunLoop();
+};
+
+
+document.getElementById('reloadBindingBtn').onclick = async () => {
+  const response = await post('/api/sandbox/survival_binding/reload');
+  if (!response.ok && response.errors) {
+    console.warn('binding reload failed', response.errors);
+  }
+  await getState();
 };
 
 const keyMap = {

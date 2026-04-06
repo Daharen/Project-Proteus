@@ -375,6 +375,12 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
     const std::filesystem::path static_dir(config.static_dir);
     auto sandbox_world = std::make_shared<sandbox::SandboxWorld>();
     auto sandbox_mutex = std::make_shared<std::mutex>();
+    const std::filesystem::path survival_binding_path = static_dir / "data" / "survival_binding.sample.json";
+    {
+        std::lock_guard<std::mutex> lock(*sandbox_mutex);
+        std::string load_error;
+        sandbox_world->reload_survival_binding(survival_binding_path.string(), &load_error);
+    }
 
     svr.Options(R"(.*)", [](const httplib::Request&, httplib::Response& res) {
         res.status = 200;
@@ -423,6 +429,12 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
         add_cors_headers(res);
     });
 
+    svr.Get("/data/survival_binding.sample.json", [static_dir](const httplib::Request&, httplib::Response& res) {
+        res.status = 200;
+        res.set_content(read_file_or_empty(static_dir / "data" / "survival_binding.sample.json"), "application/json");
+        add_cors_headers(res);
+    });
+
     svr.Get("/health", [](const httplib::Request&, httplib::Response& res) {
         send_json(res, 200, nlohmann::json{{"ok", true}, {"version", "phase_4_2"}, {"policy_version", kPlayableCorePolicyVersion}});
     });
@@ -430,6 +442,27 @@ void register_routes(httplib::Server& svr, const HttpServerConfig& config) {
     svr.Get("/api/sandbox/state", [sandbox_world, sandbox_mutex](const httplib::Request&, httplib::Response& res) {
         std::lock_guard<std::mutex> lock(*sandbox_mutex);
         send_json(res, 200, sandbox_world->to_json());
+    });
+
+    svr.Get("/api/sandbox/survival_binding", [sandbox_world, sandbox_mutex](const httplib::Request&, httplib::Response& res) {
+        std::lock_guard<std::mutex> lock(*sandbox_mutex);
+        send_json(res, 200, nlohmann::json{{"ok", true}, {"survival_binding", sandbox_world->survival_binding_status_json()}});
+    });
+
+    svr.Post("/api/sandbox/survival_binding/reload", [sandbox_world, sandbox_mutex, survival_binding_path](const httplib::Request&, httplib::Response& res) {
+        std::lock_guard<std::mutex> lock(*sandbox_mutex);
+        std::string reload_error;
+        const bool ok = sandbox_world->reload_survival_binding(survival_binding_path.string(), &reload_error);
+        if (!ok) {
+            send_json(res, 400, nlohmann::json{
+                {"ok", false},
+                {"errors", nlohmann::json::array({reload_error})},
+                {"survival_binding", sandbox_world->survival_binding_status_json()},
+            });
+            return;
+        }
+
+        send_json(res, 200, nlohmann::json{{"ok", true}, {"survival_binding", sandbox_world->survival_binding_status_json()}});
     });
 
     svr.Post("/api/sandbox/reset", [sandbox_world, sandbox_mutex](const httplib::Request&, httplib::Response& res) {
