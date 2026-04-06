@@ -34,12 +34,17 @@ public:
 
     static void clamp_semantic_state(AgentSemanticState& semantic);
     static void clamp_behavior_weights(AgentBehaviorWeights& behavior);
+    static void clamp_survival_state(AgentSurvivalState& survival);
+    static void clamp_object_resource_state(SandboxObject& object);
 
     nlohmann::json to_json() const;
     std::string deterministic_snapshot() const;
 
 private:
     void seed_world();
+    void update_survival_summaries();
+    void advance_survival_tick();
+    void apply_player_interaction(SandboxAgent& updated, const std::vector<SandboxAgent>& current_agents);
     void clamp_to_bounds_and_obstacles(SandboxAgent& agent, double prev_x, double prev_y) const;
     static bool rect_contains(const SandboxObstacle& rect, double x, double y, double radius);
 

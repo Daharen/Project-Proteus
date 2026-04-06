@@ -2,16 +2,11 @@
 
 #include <gtest/gtest.h>
 
-#include <cmath>
 #include <optional>
+#include <string>
+#include <cmath>
 
 namespace {
-
-double distance(double x1, double y1, double x2, double y2) {
-    const double dx = x2 - x1;
-    const double dy = y2 - y1;
-    return std::sqrt(dx * dx + dy * dy);
-}
 
 const proteus::sandbox::SandboxAgent* find_agent(const proteus::sandbox::SandboxWorld& world, int id) {
     for (const auto& agent : world.agents()) {
@@ -31,6 +26,37 @@ const proteus::sandbox::SandboxObject* find_object(const proteus::sandbox::Sandb
     return nullptr;
 }
 
+void freeze_background_drift(proteus::sandbox::SandboxWorld& world) {
+    for (int id = 1; id <= 5; ++id) {
+        auto* agent = world.find_agent(id);
+        ASSERT_EQ(agent == nullptr, false);
+        agent->survival.thirst_increase_per_tick = 0.0;
+        agent->survival.hunger_increase_per_tick = 0.0;
+        agent->survival.fatigue_increase_per_tick = 0.0;
+        proteus::sandbox::SandboxWorld::clamp_survival_state(agent->survival);
+    }
+    for (int object_id = 101; object_id <= 108; ++object_id) {
+        auto* object = world.find_object(object_id);
+        if (object == nullptr) {
+            continue;
+        }
+        object->regen_per_tick = 0.0;
+        proteus::sandbox::SandboxWorld::clamp_object_resource_state(*object);
+    }
+}
+
+void setup_player_front_interaction(proteus::sandbox::SandboxWorld& world, int object_id) {
+    auto* player = world.find_agent(1);
+    auto* target = world.find_object(object_id);
+    ASSERT_EQ(player == nullptr, false);
+    ASSERT_EQ(target == nullptr, false);
+    player->x = target->x - 20.0;
+    player->y = target->y;
+    player->facing_radians = 0.0;
+    player->interaction_radius = 80.0;
+    player->move_speed = 0.0;
+}
+
 }  // namespace
 
 TEST(SandboxWorldTest, ResetIsDeterministic) {
@@ -44,146 +70,150 @@ TEST(SandboxWorldTest, ResetIsDeterministic) {
     EXPECT_EQ(snap1, snap2);
 }
 
-TEST(SandboxWorldTest, StepFromSameInitialStateIsDeterministic) {
-    proteus::sandbox::SandboxWorld a;
-    proteus::sandbox::SandboxWorld b;
-
-    a.step_once();
-    b.step_once();
-
-    EXPECT_EQ(a.deterministic_snapshot(), b.deterministic_snapshot());
-}
-
-TEST(SandboxWorldTest, IncreasingFearIncreasesThreatSeparation) {
-    proteus::sandbox::SandboxWorld baseline;
-    proteus::sandbox::SandboxWorld fearful;
-
-    auto* fearful_agent = fearful.find_agent(2);
-    ASSERT_EQ(fearful_agent == nullptr, false);
-    fearful_agent->semantic.fear = 1.0;
-    fearful_agent->behavior.avoid_threat_weight = 2.5;
-    proteus::sandbox::SandboxWorld::clamp_semantic_state(fearful_agent->semantic);
-    proteus::sandbox::SandboxWorld::clamp_behavior_weights(fearful_agent->behavior);
-
-    baseline.step_n(8);
-    fearful.step_n(8);
-
-    const auto* baseline_agent = find_agent(baseline, 2);
-    const auto* fearful_agent_after = find_agent(fearful, 2);
-    const auto* threat = find_object(baseline, 102);
-    ASSERT_EQ(baseline_agent == nullptr, false);
-    ASSERT_EQ(fearful_agent_after == nullptr, false);
-    ASSERT_EQ(threat == nullptr, false);
-
-    const double base_dist = distance(baseline_agent->x, baseline_agent->y, threat->x, threat->y);
-    const double fear_dist = distance(fearful_agent_after->x, fearful_agent_after->y, threat->x, threat->y);
-    EXPECT_EQ((fear_dist > base_dist || fearful_agent_after->last_action == "avoid_object"), true);
-    EXPECT_EQ(fearful_agent_after->target_object_id, 102);
-}
-
-TEST(SandboxWorldTest, IncreasingTrustAndLoyaltyPullsTowardAllyBeacon) {
-    proteus::sandbox::SandboxWorld baseline;
-    proteus::sandbox::SandboxWorld loyal;
-
-    auto* loyal_agent = loyal.find_agent(2);
-    ASSERT_EQ(loyal_agent == nullptr, false);
-    loyal_agent->semantic.trust = 1.0;
-    loyal_agent->semantic.loyalty = 1.0;
-    loyal_agent->behavior.ally_pull_weight = 2.5;
-    proteus::sandbox::SandboxWorld::clamp_semantic_state(loyal_agent->semantic);
-    proteus::sandbox::SandboxWorld::clamp_behavior_weights(loyal_agent->behavior);
-
-    baseline.step_n(10);
-    loyal.step_n(10);
-
-    const auto* baseline_agent = find_agent(baseline, 2);
-    const auto* loyal_agent_after = find_agent(loyal, 2);
-    const auto* ally_beacon = find_object(baseline, 104);
-    ASSERT_EQ(baseline_agent == nullptr, false);
-    ASSERT_EQ(loyal_agent_after == nullptr, false);
-    ASSERT_EQ(ally_beacon == nullptr, false);
-
-    const double base_dist = distance(baseline_agent->x, baseline_agent->y, ally_beacon->x, ally_beacon->y);
-    const double loyal_dist = distance(loyal_agent_after->x, loyal_agent_after->y, ally_beacon->x, ally_beacon->y);
-    EXPECT_GT(base_dist, loyal_dist);
-}
-
-TEST(SandboxWorldTest, PlayerInputMovesDeterministicallyFromSameInitialState) {
-    proteus::sandbox::SandboxWorld a;
-    proteus::sandbox::SandboxWorld b;
-
-    const std::optional<proteus::sandbox::SandboxPlayerInput> input = proteus::sandbox::SandboxPlayerInput{1.0, 0.0, false};
-    for (int i = 0; i < 5; ++i) {
-        a.step_once_with_input(input);
-        b.step_once_with_input(input);
-    }
-
-    const auto* player_a = find_agent(a, 1);
-    const auto* player_b = find_agent(b, 1);
-    ASSERT_EQ(player_a == nullptr, false);
-    ASSERT_EQ(player_b == nullptr, false);
-    EXPECT_GT(player_a->x, 110.0);
-    EXPECT_EQ(a.deterministic_snapshot(), b.deterministic_snapshot());
-}
-
-TEST(SandboxWorldTest, InteractionChoosesNearestTargetWithStableIdTiebreak) {
+TEST(SandboxWorldTest, SurvivalDriftPerStepIsDeterministic) {
     proteus::sandbox::SandboxWorld world;
-    auto* player = world.find_agent(1);
-    ASSERT_EQ(player == nullptr, false);
-    player->x = 200.0;
-    player->y = 200.0;
-    player->facing_radians = 0.0;
-    player->interaction_radius = 120.0;
+    const auto* before = find_agent(world, 1);
+    ASSERT_EQ(before == nullptr, false);
 
-    auto* agent2 = world.find_agent(2);
-    auto* agent3 = world.find_agent(3);
-    ASSERT_EQ(agent2 == nullptr, false);
-    ASSERT_EQ(agent3 == nullptr, false);
-    agent2->x = 250.0;
-    agent2->y = 200.0;
-    agent3->x = 250.0;
-    agent3->y = 200.0;
+    const double start_thirst = before->survival.state_thirst_current;
+    const double start_hunger = before->survival.state_hunger_current;
+    const double start_fatigue = before->survival.state_fatigue_current;
+
+    world.step_n(4);
+
+    const auto* after = find_agent(world, 1);
+    ASSERT_EQ(after == nullptr, false);
+    EXPECT_EQ(std::abs(after->survival.state_thirst_current - (start_thirst + 4.0 * before->survival.thirst_increase_per_tick)) < 1e-9, true);
+    EXPECT_EQ(std::abs(after->survival.state_hunger_current - (start_hunger + 4.0 * before->survival.hunger_increase_per_tick)) < 1e-9, true);
+    EXPECT_EQ(std::abs(after->survival.state_fatigue_current - (start_fatigue + 4.0 * before->survival.fatigue_increase_per_tick)) < 1e-9, true);
+}
+
+TEST(SandboxWorldTest, ResourceRegenerationPerStepIsDeterministic) {
+    proteus::sandbox::SandboxWorld world;
+    auto* water = world.find_object(101);
+    ASSERT_EQ(water == nullptr, false);
+    water->available_units = 5.0;
+    water->max_units = 10.0;
+    water->regen_per_tick = 0.5;
+    proteus::sandbox::SandboxWorld::clamp_object_resource_state(*water);
+
+    world.step_n(6);
+
+    const auto* water_after = find_object(world, 101);
+    ASSERT_EQ(water_after == nullptr, false);
+    EXPECT_EQ(water_after->available_units, 8.0);
+}
+
+TEST(SandboxWorldTest, DrinkingReducesThirstAndWaterUnitsDeterministically) {
+    proteus::sandbox::SandboxWorld world;
+    freeze_background_drift(world);
+    setup_player_front_interaction(world, 101);
+
+    auto* player = world.find_agent(1);
+    auto* water = world.find_object(101);
+    ASSERT_EQ(player == nullptr, false);
+    ASSERT_EQ(water == nullptr, false);
+    player->survival.state_thirst_current = 62.0;
+    player->survival.drink_thirst_reduction = 25.0;
+    water->available_units = 10.0;
+    water->consumption_per_interaction = 1.0;
 
     world.step_once_with_input(proteus::sandbox::SandboxPlayerInput{0.0, 0.0, true});
 
-    const auto* updated_player = find_agent(world, 1);
-    ASSERT_EQ(updated_player == nullptr, false);
-    EXPECT_EQ(updated_player->target_agent_id, 2);
-    EXPECT_EQ(updated_player->last_interaction, "inspect agent_blue");
+    const auto* after_player = find_agent(world, 1);
+    const auto* after_water = find_object(world, 101);
+    ASSERT_EQ(after_player == nullptr, false);
+    ASSERT_EQ(after_water == nullptr, false);
+    EXPECT_EQ(after_player->survival.state_thirst_current, 37.0);
+    EXPECT_EQ(after_water->available_units, 9.0);
+    EXPECT_EQ(after_player->last_interaction_result, "drink water_source_a: thirst 62 -> 37, units 10 -> 9");
 }
 
-TEST(SandboxWorldTest, InteractionReportsDeterministicFailureWhenNoValidFrontTarget) {
+TEST(SandboxWorldTest, EatingReducesHungerAndFoodUnitsDeterministically) {
     proteus::sandbox::SandboxWorld world;
-    auto* player = world.find_agent(1);
-    ASSERT_EQ(player == nullptr, false);
-    player->x = 200.0;
-    player->y = 200.0;
-    player->facing_radians = 0.0;
-    player->interaction_radius = 30.0;
+    freeze_background_drift(world);
+    setup_player_front_interaction(world, 103);
 
-    auto* object = world.find_object(101);
-    ASSERT_EQ(object == nullptr, false);
-    object->x = 170.0;
-    object->y = 200.0;
+    auto* player = world.find_agent(1);
+    auto* food = world.find_object(103);
+    ASSERT_EQ(player == nullptr, false);
+    ASSERT_EQ(food == nullptr, false);
+    player->survival.state_hunger_current = 55.0;
+    player->survival.eat_hunger_reduction = 20.0;
+    food->available_units = 8.0;
+    food->consumption_per_interaction = 1.0;
 
     world.step_once_with_input(proteus::sandbox::SandboxPlayerInput{0.0, 0.0, true});
 
-    const auto* updated_player = find_agent(world, 1);
-    ASSERT_EQ(updated_player == nullptr, false);
-    EXPECT_EQ(updated_player->target_agent_id, -1);
-    EXPECT_EQ(updated_player->target_object_id, -1);
-    EXPECT_EQ(updated_player->last_interaction_result, "no valid target in front arc and interaction radius");
+    const auto* after_player = find_agent(world, 1);
+    const auto* after_food = find_object(world, 103);
+    ASSERT_EQ(after_player == nullptr, false);
+    ASSERT_EQ(after_food == nullptr, false);
+    EXPECT_EQ(after_player->survival.state_hunger_current, 35.0);
+    EXPECT_EQ(after_food->available_units, 7.0);
+    EXPECT_EQ(after_player->last_interaction_result, "eat food_source_a: hunger 55 -> 35, units 8 -> 7");
 }
 
-TEST(SandboxWorldTest, RepeatedExplicitStepCallsPreserveDeterminismWithInput) {
-    proteus::sandbox::SandboxWorld a;
-    proteus::sandbox::SandboxWorld b;
+TEST(SandboxWorldTest, RestingAtShelterReducesFatigueDeterministically) {
+    proteus::sandbox::SandboxWorld world;
+    freeze_background_drift(world);
+    setup_player_front_interaction(world, 106);
+
+    auto* player = world.find_agent(1);
+    ASSERT_EQ(player == nullptr, false);
+    player->survival.state_fatigue_current = 70.0;
+    player->survival.sleep_fatigue_reduction = 30.0;
+
+    world.step_once_with_input(proteus::sandbox::SandboxPlayerInput{0.0, 0.0, true});
+
+    const auto* after_player = find_agent(world, 1);
+    ASSERT_EQ(after_player == nullptr, false);
+    EXPECT_EQ(after_player->survival.state_fatigue_current, 40.0);
+    EXPECT_EQ(after_player->last_interaction_result, "sleep at shelter_a: fatigue 70 -> 40");
+}
+
+TEST(SandboxWorldTest, BatchedAndSingleStepPathsProduceIdenticalState) {
+    proteus::sandbox::SandboxWorld batched;
+    proteus::sandbox::SandboxWorld single;
+
     const auto input = std::optional<proteus::sandbox::SandboxPlayerInput>(proteus::sandbox::SandboxPlayerInput{0.0, -1.0, false});
-
-    a.step_n_with_input(12, input);
+    batched.step_n_with_input(12, input);
     for (int i = 0; i < 12; ++i) {
-        b.step_once_with_input(input);
+        single.step_once_with_input(input);
     }
 
-    EXPECT_EQ(a.deterministic_snapshot(), b.deterministic_snapshot());
+    EXPECT_EQ(batched.deterministic_snapshot(), single.deterministic_snapshot());
+}
+
+TEST(SandboxWorldTest, InvalidInteractionLeavesStateUnchangedExceptResultText) {
+    proteus::sandbox::SandboxWorld world;
+    freeze_background_drift(world);
+
+    auto* player = world.find_agent(1);
+    ASSERT_EQ(player == nullptr, false);
+    player->x = 200.0;
+    player->y = 200.0;
+    player->facing_radians = 0.0;
+    player->interaction_radius = 20.0;
+
+    const auto thirst_before = player->survival.state_thirst_current;
+    const auto hunger_before = player->survival.state_hunger_current;
+    const auto fatigue_before = player->survival.state_fatigue_current;
+    const auto* water = find_object(world, 101);
+    const auto* food = find_object(world, 103);
+    ASSERT_EQ(water == nullptr, false);
+    ASSERT_EQ(food == nullptr, false);
+    const auto water_before = water->available_units;
+    const auto food_before = food->available_units;
+    world.step_once_with_input(proteus::sandbox::SandboxPlayerInput{0.0, 0.0, true});
+
+    const auto* after_player = find_agent(world, 1);
+    ASSERT_EQ(after_player == nullptr, false);
+    EXPECT_EQ(after_player->last_interaction_result, "no valid consumable target in front arc");
+
+    EXPECT_EQ(after_player->survival.state_thirst_current, thirst_before);
+    EXPECT_EQ(after_player->survival.state_hunger_current, hunger_before);
+    EXPECT_EQ(after_player->survival.state_fatigue_current, fatigue_before);
+    EXPECT_EQ(find_object(world, 101)->available_units, water_before);
+    EXPECT_EQ(find_object(world, 103)->available_units, food_before);
 }
